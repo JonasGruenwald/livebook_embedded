@@ -28,4 +28,5 @@ export function registerVsCodeEventHandlers() {
       shiftKey: e.shiftKey
     }), '*')
   })
+  console.log("vscode event handlers registered")
 }

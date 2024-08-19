@@ -191,9 +191,12 @@ const Cell = {
       setTimeout(() => {
         // Prevent from blurring unless the state changes. For example
         // when we move cell using buttons the editor should keep focus
-        if (this.isFocused && this.insertMode) {
-          this.currentEditor().focus();
-        }
+
+        // if (this.isFocused && this.insertMode) {
+        //   this.currentEditor().focus();
+        // }
+        
+        //^--- disabled because it does not play well with the iframe
       }, 0);
     });
 
