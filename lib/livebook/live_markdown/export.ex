@@ -28,19 +28,18 @@ defmodule Livebook.LiveMarkdown.Export do
     for(
       section <- notebook.sections,
       %{outputs: outputs} <- section.cells,
-      {_idx, %{type: :js, js_view: js_view, export: export}} <- outputs,
-      export == true or is_map(export),
-      do: {js_view.ref, js_view.pid, export},
+      {_idx, %{type: :js, js_view: js_view, export: true}} <- outputs,
+      do: {js_view.ref, js_view.pid},
       uniq: true
     )
-    |> Enum.map(fn {ref, pid, export} ->
-      Task.async(fn -> {ref, get_js_output_export(pid, ref, export)} end)
+    |> Enum.map(fn {ref, pid} ->
+      Task.async(fn -> {ref, get_js_output_export(pid, ref)} end)
     end)
     |> Task.await_many(:infinity)
     |> Map.new()
   end
 
-  defp get_js_output_export(pid, ref, true) do
+  defp get_js_output_export(pid, ref) do
     send(pid, {:export, self(), %{ref: ref}})
 
     monitor_ref = Process.monitor(pid)
@@ -54,27 +53,6 @@ defmodule Livebook.LiveMarkdown.Export do
     Process.demonitor(monitor_ref, [:flush])
 
     data
-  end
-
-  # TODO: remove on Livebook v0.13
-  # Handle old flow for backward compatibility with Kino <= 0.10.0
-  defp get_js_output_export(pid, ref, %{info_string: info_string, key: key}) do
-    send(pid, {:connect, self(), %{origin: inspect(self()), ref: ref}})
-
-    monitor_ref = Process.monitor(pid)
-
-    data =
-      receive do
-        {:connect_reply, data, %{ref: ^ref}} -> data
-        {:DOWN, ^monitor_ref, :process, _pid, _reason} -> nil
-      end
-
-    Process.demonitor(monitor_ref, [:flush])
-
-    if data do
-      payload = if key && is_map(data), do: data[key], else: data
-      {info_string, payload}
-    end
   end
 
   defp render_notebook(notebook, ctx) do
@@ -102,7 +80,14 @@ defmodule Livebook.LiveMarkdown.Export do
   end
 
   defp notebook_metadata(notebook) do
-    keys = [:persist_outputs, :autosave_interval_s, :default_language, :hub_id]
+    keys = [
+      :persist_outputs,
+      :autosave_interval_s,
+      :default_language,
+      :hub_id,
+      :deployment_group_id
+    ]
+
     metadata = put_unless_default(%{}, Map.take(notebook, keys), Map.take(Notebook.new(), keys))
 
     app_settings_metadata = app_settings_metadata(notebook.app_settings)
@@ -203,7 +188,7 @@ defmodule Livebook.LiveMarkdown.Export do
 
   defp render_cell(%Cell.Code{} = cell, ctx) do
     delimiter = MarkdownHelpers.code_block_delimiter(cell.source)
-    code = get_code_cell_code(cell)
+    code = cell.source
     outputs = if ctx.include_outputs?, do: render_outputs(cell, ctx), else: []
 
     metadata = cell_metadata(cell)
@@ -233,7 +218,7 @@ defmodule Livebook.LiveMarkdown.Export do
   end
 
   defp cell_metadata(%Cell.Code{} = cell) do
-    keys = [:disable_formatting, :reevaluate_automatically, :continue_on_error]
+    keys = [:reevaluate_automatically, :continue_on_error]
     put_unless_default(%{}, Map.take(cell, keys), Map.take(Cell.Code.new(), keys))
   end
 
@@ -292,11 +277,6 @@ defmodule Livebook.LiveMarkdown.Export do
   defp encode_js_data(data) when is_binary(data), do: {:ok, data}
   defp encode_js_data(data), do: data |> ensure_order() |> Jason.encode()
 
-  defp get_code_cell_code(%{source: source, language: :elixir, disable_formatting: false}),
-    do: format_elixir_code(source)
-
-  defp get_code_cell_code(%{source: source}), do: source
-
   defp render_metadata(metadata) do
     metadata_json = metadata |> ensure_order() |> Jason.encode!()
     ["<!-- livebook:", metadata_json, " -->"]
@@ -340,14 +320,6 @@ defmodule Livebook.LiveMarkdown.Export do
       ast_node ->
         [ast_node]
     end)
-  end
-
-  defp format_elixir_code(code) do
-    try do
-      Code.format_string!(code)
-    rescue
-      _ -> code
-    end
   end
 
   defp put_unless_default(map, entries, defaults) do
@@ -401,18 +373,25 @@ defmodule Livebook.LiveMarkdown.Export do
     # If there are any :file file entries, we want to generate a stamp
     # to make sure the entries are not tampered with. We also want to
     # store the information about file entries already in quarantine
-    if Enum.any?(notebook.file_entries, &(&1.type == :file)) do
-      Map.put(
-        metadata,
-        :quarantine_file_entry_names,
-        MapSet.to_list(notebook.quarantine_file_entry_names)
-      )
+    metadata =
+      if Enum.any?(notebook.file_entries, &(&1.type == :file)) do
+        Map.put(
+          metadata,
+          :quarantine_file_entry_names,
+          MapSet.to_list(notebook.quarantine_file_entry_names)
+        )
+      else
+        metadata
+      end
+
+    if notebook.app_settings.slug != nil and notebook.app_settings.access_type == :protected do
+      Map.put(metadata, :app_settings_password, notebook.app_settings.password)
     else
       metadata
     end
   end
 
-  defp ensure_order(%{} = map) do
+  defp ensure_order(%{} = map) when not is_struct(map) do
     map
     |> Enum.sort()
     |> Enum.map(fn {key, value} -> {key, ensure_order(value)} end)

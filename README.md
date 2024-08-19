@@ -7,7 +7,7 @@ Livebook is a web application for writing interactive and collaborative code not
 
   * Code notebooks with Markdown support and Code cells where Elixir code is evaluated on demand.
 
-  * Rich code editor through [Monaco](https://microsoft.github.io/monaco-editor/): with support for autocompletion, inline documentation, code formatting, etc.
+  * Rich code editor through [CodeMirror](https://codemirror.net/): with support for autocompletion, inline documentation, code formatting, etc.
 
   * Interactive results via [Kino](https://github.com/elixir-nx/kino): display [Vega-Lite charts](https://vega.github.io/vega-lite/), tables, maps, and more.
 
@@ -89,7 +89,7 @@ with [Nerves](https://www.nerves-project.org/).
 ### Direct installation with Elixir
 
 You can run Livebook on your own machine using just Elixir. You will need
-[Elixir v1.15.2](https://elixir-lang.org/install.html) or later.
+[Elixir v1.16](https://elixir-lang.org/install.html) or later.
 Livebook also requires the following Erlang applications: `inets`,
 `os_mon`, `runtime_tools`, `ssl` and `xmerl`. Those applications come
 with most Erlang distributions but certain package managers may split
@@ -201,8 +201,9 @@ The following environment variables can be used to configure Livebook on boot:
     accesses files from external sources.
 
   * `LIVEBOOK_CLUSTER` - configures clustering strategy when running multiple
-    instances of Livebook. See the "Clustering" section of our Docker Deployment
-    guide for more information: https://hexdocs.pm/livebook/docker.html
+    instances of Livebook using either the Docker image or an Elixir release.
+    See the "Clustering" docs for more information:
+    https://hexdocs.pm/livebook/clustering.html
 
   * `LIVEBOOK_COOKIE` - sets the cookie for running Livebook in a cluster.
     Defaults to a random string that is generated on boot.
@@ -219,9 +220,11 @@ The following environment variables can be used to configure Livebook on boot:
     "standalone" (Elixir standalone), "attached:NODE:COOKIE" (Attached node)
     or "embedded" (Embedded). Defaults to "standalone".
 
-  * `LIVEBOOK_DISTRIBUTION` - sets the node distribution for running Livebook in a
-    cluster. Must be "name" (long names) or "sname" (short names). Note that this
-    sets RELEASE_DISTRIBUTION if present when creating a release. Defaults to "sname".
+  * `LIVEBOOK_EPMDLESS` - if set to "true", it disables the usage of EPMD. This is
+    only supported within releases and defaults to true for the Desktop app.
+
+  * `LIVEBOOK_FIPS` - if set to "true", it enables the FIPS mode on startup.
+    See more details in [the documentation](https://hexdocs.pm/livebook/fips.html).
 
   * `LIVEBOOK_FORCE_SSL_HOST` - sets a host to redirect to if the request is not over HTTPS.
     Note it does not apply when accessing Livebook via localhost. Defaults to nil.
@@ -235,11 +238,11 @@ The following environment variables can be used to configure Livebook on boot:
     Livebook inside a cloud platform, such as Cloudflare and Google.
     Supported values are:
 
-      * "cloudflare:<your-team-name (domain)>"
-      * "google_iap:<your-audience (aud)>"
-      * "tailscale:<tailscale-cli-socket-path>"
-      * "teleport:<teleport-cluster-address>"
-      * "custom:YourElixirModule"
+      * `basic_auth:<username>:<password>`
+      * `cloudflare:<your-team-name (domain)>`
+      * `google_iap:<your-audience (aud)>`
+      * `tailscale:<tailscale-cli-socket-path>`
+      * `custom:YourElixirModule`
 
     See our authentication docs for more information: https://hexdocs.pm/livebook/authentication.html
 
@@ -253,11 +256,17 @@ The following environment variables can be used to configure Livebook on boot:
   * `LIVEBOOK_IP` - sets the ip address to start the web application on.
     Must be a valid IPv4 or IPv6 address.
 
-  * `LIVEBOOK_NODE` - sets the node name for running Livebook in a cluster. Note that
-    this sets RELEASE_NODE if present when creating a release.
+  * `LIVEBOOK_NODE` - sets the node name for running Livebook in a cluster.
+    Note that Livebook always runs using long names distribution, so the
+    node host name must use a fully qualified domain name (FQDN) or an IP
+    address.
 
   * `LIVEBOOK_PASSWORD` - sets a password that must be used to access Livebook.
     Must be at least 12 characters. Defaults to token authentication.
+
+  * `LIVEBOOK_PROXY_HEADERS` - a comma-separated list of headers that are set by
+    proxies. For example, `x-forwarded-for,x-forwarded-proto`. Configuring those
+    may be required when running Livebook behind reverse proxies.
 
   * `LIVEBOOK_PORT` - sets the port Livebook runs on. If you want to run multiple
     instances on the same domain with the same credentials but on different ports,
@@ -283,6 +292,10 @@ The following environment variables can be used to configure Livebook on boot:
     iframe. Set it to "true" to enable it. If you do enable it, then the application
     must run with HTTPS.
 
+The environment variables `ERL_AFLAGS` and `ERL_ZFLAGS` can also be set to configure
+Livebook and the notebook runtimes. `ELIXIR_ERL_OPTIONS` are also available to customize
+Livebook, but it is not forwarded to runtimes.
+
 <!-- Environment variables -->
 
 If running Livebook via the command line, run `livebook server --help` to see
@@ -296,9 +309,6 @@ on Windows. This file can set environment variables used by Livebook,
 such as:
 
   * [the `PATH` environment variable](https://en.wikipedia.org/wiki/PATH_(variable))
-
-  * set `LIVEBOOK_DISTRIBUTION=name` to enable notebooks to communicate
-    with nodes in other machines
 
   * or to configure the Erlang VM, for instance, by setting
     `ERL_AFLAGS="-proto_dist inet6_tcp"` if you need Livebook to run over IPv6
@@ -322,8 +332,9 @@ mix phx.server
 mix test
 ```
 
-Once you submit a pull request, [Uffizzi](https://www.uffizzi.com) will setup
-a preview environment where anyone can try out your changes and give feedback.
+### Acknowledgements
+
+Thank you to [Uffizzi](https://www.uffizzi.com) for providing ephemeral environments to preview pull requests.
 
 ### Desktop app builds
 
@@ -347,17 +358,39 @@ For Windows, run:
 .github/scripts/app/build_windows.sh
 ```
 
+## Platinum sponsors
+
+<a href="https://fly.io">
+ <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://fly.io/public/images/brand/logo-inverted.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://fly.io/public/images/brand/logo.svg">
+    <img height="130" src="https://fly.io/public/images/brand/logo.svg" alt="Fly.io">
+  </picture>
+</a>
+
+Fly is a platform for running full stack apps and databases close to your users.
+
 ## Sponsors
 
-Livebook development is sponsored by:
+<a href="https://huggingface.co/">
+  <img height="70" src="https://huggingface.co/datasets/huggingface/brand-assets/resolve/main/hf-logo-with-title.png" alt="Hugging Face">
+</a>
 
-<a href="https://fly.io" target=_blank><img src="https://fly.io/public/images/brand/logo.svg" width="320" /></a>
+The platform where the machine learning community<br />
+collaborates on models, datasets, and applications.
 
-## Supporters
+<br />
 
-Machine Learning and Neural Network models hosted by:
+<a href="https://www.tigrisdata.com/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://www.tigrisdata.com/docs/logo/dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://www.tigrisdata.com/docs/logo/light.png">
+    <img height="50" src="https://www.tigrisdata.com/docs/logo/light.png" alt="Tigris">
+  </picture>
+</a>
 
-<a href="https://huggingface.co/" target=_blank><img src="https://huggingface.co/datasets/huggingface/brand-assets/resolve/main/hf-logo-with-title.png" width="320" /></a>
+Tigris is a globally distributed S3-compatible object storage<br />
+service that provides low latency anywhere in the world.
 
 ## License
 

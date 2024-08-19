@@ -1,5 +1,5 @@
 defmodule Livebook.Runtime.Definitions do
-  @kino_requirement "~> 0.12.0"
+  @kino_requirement "~> 0.13.0"
 
   def kino_requirement do
     @kino_requirement
@@ -12,22 +12,22 @@ defmodule Livebook.Runtime.Definitions do
 
   kino_vega_lite = %{
     name: "kino_vega_lite",
-    dependency: %{dep: {:kino_vega_lite, "~> 0.1.10"}, config: []}
+    dependency: %{dep: {:kino_vega_lite, "~> 0.1.11"}, config: []}
   }
 
   kino_db = %{
     name: "kino_db",
-    dependency: %{dep: {:kino_db, "~> 0.2.3"}, config: []}
+    dependency: %{dep: {:kino_db, "~> 0.2.8"}, config: []}
   }
 
   exqlite = %{
     name: "exqlite",
-    dependency: %{dep: {:exqlite, "~> 0.11.0"}, config: []}
+    dependency: %{dep: {:exqlite, "~> 0.23.0"}, config: []}
   }
 
   kino_maplibre = %{
     name: "kino_maplibre",
-    dependency: %{dep: {:kino_maplibre, "~> 0.1.10"}, config: []}
+    dependency: %{dep: {:kino_maplibre, "~> 0.1.12"}, config: []}
   }
 
   kino_slack = %{
@@ -37,7 +37,7 @@ defmodule Livebook.Runtime.Definitions do
 
   kino_bumblebee = %{
     name: "kino_bumblebee",
-    dependency: %{dep: {:kino_bumblebee, "~> 0.4.0"}, config: []}
+    dependency: %{dep: {:kino_bumblebee, "~> 0.5.0"}, config: []}
   }
 
   exla = %{
@@ -52,7 +52,7 @@ defmodule Livebook.Runtime.Definitions do
 
   kino_explorer = %{
     name: "kino_explorer",
-    dependency: %{dep: {:kino_explorer, "~> 0.1.11"}, config: []}
+    dependency: %{dep: {:kino_explorer, "~> 0.1.20"}, config: []}
   }
 
   jason = %{
@@ -62,7 +62,12 @@ defmodule Livebook.Runtime.Definitions do
 
   stb_image = %{
     name: "stb_image",
-    dependency: %{dep: {:stb_image, "~> 0.6.2"}, config: []}
+    dependency: %{dep: {:stb_image, "~> 0.6.9"}, config: []}
+  }
+
+  xlsx_reader = %{
+    name: "xlsx_reader",
+    dependency: %{dep: {:xlsx_reader, "~> 0.8.5"}, config: []}
   }
 
   windows? = match?({:win32, _}, :os.type())
@@ -411,6 +416,32 @@ defmodule Livebook.Runtime.Definitions do
       Exqlite.query!(conn, "PRAGMA table_list", [])\
       """,
       packages: [kino_db, exqlite]
+    },
+    %{
+      type: :file_action,
+      file_types: [".xlsx", ".xlsm"],
+      description: "Read sheets",
+      source: """
+      xlsx_file = Kino.FS.file_path("{{NAME}}")
+      {:ok, package} = XlsxReader.open(xlsx_file)
+
+      tabs =
+        for sheet <- XlsxReader.sheet_names(package) do
+          maps =
+            case XlsxReader.sheet(package, sheet) do
+              {:ok, []} ->
+                []
+
+              {:ok, [header | rows]} ->
+                Enum.map(rows, fn row -> header |> Enum.zip(row) |> Map.new() end)
+            end
+
+          {sheet, Kino.DataTable.new(maps)}
+        end
+
+      Kino.Layout.tabs(tabs)
+      """,
+      packages: [kino, xlsx_reader]
     }
   ]
 

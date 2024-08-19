@@ -68,41 +68,6 @@ defmodule LivebookWeb.SessionControllerTest do
     end
   end
 
-  # Legacy endpoint for resolving images/
-  describe "show_image" do
-    test "returns not found when the given session does not exist", %{conn: conn} do
-      id = Livebook.Utils.random_node_aware_id()
-      conn = get(conn, ~p"/sessions/#{id}/images/image.jpg")
-
-      assert conn.status == 404
-      assert conn.resp_body == "Not found"
-    end
-
-    test "returns not found when the given image does not exist", %{conn: conn} do
-      {:ok, session} = Sessions.create_session()
-
-      conn = get(conn, ~p"/sessions/#{session.id}/images/nonexistent.jpg")
-
-      assert conn.status == 404
-      assert conn.resp_body == "No such file or directory"
-
-      Session.close(session.pid)
-    end
-
-    test "returns the image when it does exist", %{conn: conn} do
-      {:ok, session} = Sessions.create_session()
-      images_dir = FileSystem.File.resolve(session.files_dir, "../images/")
-      :ok = FileSystem.File.resolve(images_dir, "test.jpg") |> FileSystem.File.write("")
-
-      conn = get(conn, ~p"/sessions/#{session.id}/images/test.jpg")
-
-      assert conn.status == 200
-      assert get_resp_header(conn, "content-type") == ["image/jpeg"]
-
-      Session.close(session.pid)
-    end
-  end
-
   describe "download_file" do
     test "returns not found when the given session does not exist", %{conn: conn} do
       id = Livebook.Utils.random_node_aware_id()
@@ -285,12 +250,17 @@ defmodule LivebookWeb.SessionControllerTest do
   end
 
   describe "show_asset" do
+    @describetag authentication: %{mode: :password, secret: "grumpycat"}
+
     test "fetches assets and redirects to the session-less path", %{conn: conn} do
       %{notebook: notebook, hash: hash} = notebook_with_js_output()
 
       conn = start_session_and_request_asset(conn, notebook, hash)
 
-      assert redirected_to(conn, 301) == ~p"/public/sessions/assets/#{hash}/main.js"
+      node_id = Livebook.Utils.node_id()
+
+      assert redirected_to(conn, 301) ==
+               ~p"/public/sessions/node/#{node_id}/assets/#{hash}/main.js"
 
       {:ok, asset_path} = Session.local_asset_path(hash, "main.js")
       assert File.exists?(asset_path)
@@ -303,7 +273,10 @@ defmodule LivebookWeb.SessionControllerTest do
 
       conn = start_session_and_request_asset(conn, notebook, hash)
 
-      assert redirected_to(conn, 301) == ~p"/public/sessions/assets/#{hash}/main.js"
+      node_id = Livebook.Utils.node_id()
+
+      assert redirected_to(conn, 301) ==
+               ~p"/public/sessions/node/#{node_id}/assets/#{hash}/main.js"
 
       assert File.exists?(Path.join(assets_path, "main.js"))
     end
@@ -318,15 +291,21 @@ defmodule LivebookWeb.SessionControllerTest do
 
       conn = get(conn, ~p"/public/sessions/#{random_session_id}/assets/#{hash}/main.js")
 
-      assert redirected_to(conn, 301) == ~p"/public/sessions/assets/#{hash}/main.js"
+      node_id = Livebook.Utils.node_id()
+
+      assert redirected_to(conn, 301) ==
+               ~p"/public/sessions/node/#{node_id}/assets/#{hash}/main.js"
     end
   end
 
   describe "show_cached_asset" do
+    @describetag authentication: %{mode: :password, secret: "grumpycat"}
+
     test "returns not found when no matching assets are in the cache", %{conn: conn} do
       %{notebook: _notebook, hash: hash} = notebook_with_js_output()
 
-      conn = get(conn, ~p"/public/sessions/assets/#{hash}/main.js")
+      node_id = Livebook.Utils.node_id()
+      conn = get(conn, ~p"/public/sessions/node/#{node_id}/assets/#{hash}/main.js")
 
       assert conn.status == 404
       assert conn.resp_body == "Not found"
@@ -337,7 +316,8 @@ defmodule LivebookWeb.SessionControllerTest do
       # Fetch the assets for the first time
       start_session_and_request_asset(conn, notebook, hash)
 
-      conn = get(conn, ~p"/public/sessions/assets/#{hash}/main.js")
+      node_id = Livebook.Utils.node_id()
+      conn = get(conn, ~p"/public/sessions/node/#{node_id}/assets/#{hash}/main.js")
 
       assert conn.status == 200
       assert "export function init(" <> _ = conn.resp_body
@@ -348,10 +328,12 @@ defmodule LivebookWeb.SessionControllerTest do
 
       start_session_and_request_asset(conn, notebook, hash)
 
+      node_id = Livebook.Utils.node_id()
+
       conn =
         conn
         |> put_req_header("accept-encoding", "gzip")
-        |> get(~p"/public/sessions/assets/#{hash}/main.js")
+        |> get(~p"/public/sessions/node/#{node_id}/assets/#{hash}/main.js")
 
       assert conn.status == 200
       assert "export function init(" <> _ = :zlib.gunzip(conn.resp_body)
@@ -367,7 +349,7 @@ defmodule LivebookWeb.SessionControllerTest do
 
       token = LivebookWeb.SessionHelpers.generate_input_token(view.pid, input_id)
 
-      conn = get(conn, ~p"/sessions/audio-input/#{token}")
+      conn = conn |> with_password_auth() |> get(~p"/public/sessions/audio-input/#{token}")
 
       assert conn.status == 200
       assert conn.resp_body == "wav content"
@@ -386,8 +368,9 @@ defmodule LivebookWeb.SessionControllerTest do
 
       conn =
         conn
+        |> with_password_auth()
         |> put_req_header("range", "bytes=4-")
-        |> get(~p"/sessions/audio-input/#{token}")
+        |> get(~p"/public/sessions/audio-input/#{token}")
 
       assert conn.status == 206
       assert conn.resp_body == "content"
@@ -404,7 +387,7 @@ defmodule LivebookWeb.SessionControllerTest do
 
       token = LivebookWeb.SessionHelpers.generate_input_token(view.pid, input_id)
 
-      conn = get(conn, ~p"/sessions/audio-input/#{token}")
+      conn = conn |> with_password_auth() |> get(~p"/public/sessions/audio-input/#{token}")
 
       assert conn.status == 200
       assert <<_header::44-binary, "pcm content">> = conn.resp_body
@@ -423,8 +406,9 @@ defmodule LivebookWeb.SessionControllerTest do
 
       conn =
         conn
+        |> with_password_auth()
         |> put_req_header("range", "bytes=48-")
-        |> get(~p"/sessions/audio-input/#{token}")
+        |> get(~p"/public/sessions/audio-input/#{token}")
 
       assert conn.status == 206
       assert conn.resp_body == "content"
@@ -443,7 +427,7 @@ defmodule LivebookWeb.SessionControllerTest do
 
       token = LivebookWeb.SessionHelpers.generate_input_token(view.pid, input_id)
 
-      conn = get(conn, ~p"/sessions/image-input/#{token}")
+      conn = conn |> with_password_auth() |> get(~p"/public/sessions/image-input/#{token}")
 
       assert conn.status == 200
       assert conn.resp_body == "rgb content"
@@ -463,6 +447,11 @@ defmodule LivebookWeb.SessionControllerTest do
     Session.close(session.pid)
 
     conn
+  end
+
+  defp with_password_auth(conn) do
+    authentication = %{mode: :password, secret: "grumpycat"}
+    with_authentication(conn, authentication)
   end
 
   defp notebook_with_js_output() do

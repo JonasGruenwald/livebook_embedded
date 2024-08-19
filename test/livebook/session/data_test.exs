@@ -4,7 +4,8 @@ defmodule Livebook.Session.DataTest do
   import Livebook.TestHelpers
 
   alias Livebook.Session.Data
-  alias Livebook.{Delta, Notebook}
+  alias Livebook.{Text, Notebook}
+  alias Livebook.Text.Delta
   alias Livebook.Users.User
 
   @eval_resp %{type: :terminal_text, text: ":ok", chunk: false}
@@ -2988,7 +2989,7 @@ defmodule Livebook.Session.DataTest do
               %{
                 notebook: %{sections: [%{cells: [%{id: "c1", source: "content"}]}]}
               },
-              [{:report_delta, ^client_id, _cell, :primary, ^delta}]} =
+              [{:report_delta, ^client_id, _cell, :primary, ^delta, nil}]} =
                Data.apply_operation(data, operation)
     end
   end
@@ -3018,7 +3019,7 @@ defmodule Livebook.Session.DataTest do
                   sections: [%{cells: [%{id: "c1", source: "content!", attrs: ^attrs}]}]
                 }
               },
-              [{:report_delta, ^client_id, _cell, :primary, ^delta2}]} =
+              [{:report_delta, ^client_id, _cell, :primary, ^delta2, nil}]} =
                Data.apply_operation(data, operation)
     end
   end
@@ -3263,7 +3264,7 @@ defmodule Livebook.Session.DataTest do
           {:client_join, client1_id, user},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:apply_cell_delta, client1_id, "c1", :primary, delta1, 1}
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0}
         ])
 
       client2_id = "cid2"
@@ -3338,7 +3339,7 @@ defmodule Livebook.Session.DataTest do
           {:client_join, client2_id, User.new()},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:apply_cell_delta, client1_id, "c1", :primary, delta1, 1}
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0}
         ])
 
       operation = {:client_leave, client2_id}
@@ -3389,7 +3390,7 @@ defmodule Livebook.Session.DataTest do
           {:client_join, @cid, User.new()}
         ])
 
-      operation = {:apply_cell_delta, @cid, "nonexistent", :primary, Delta.new(), 1}
+      operation = {:apply_cell_delta, @cid, "nonexistent", :primary, Delta.new(), nil, 0}
       assert :error = Data.apply_operation(data, operation)
     end
 
@@ -3402,7 +3403,7 @@ defmodule Livebook.Session.DataTest do
         ])
 
       delta = Delta.new() |> Delta.insert("cats")
-      operation = {:apply_cell_delta, @cid, "c1", :primary, delta, 5}
+      operation = {:apply_cell_delta, @cid, "c1", :primary, delta, nil, 5}
 
       assert :error = Data.apply_operation(data, operation)
     end
@@ -3417,11 +3418,11 @@ defmodule Livebook.Session.DataTest do
           {:client_join, client1_id, User.new()},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:apply_cell_delta, client1_id, "c1", :primary, delta1, 1}
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0}
         ])
 
       delta = Delta.new() |> Delta.insert("cats")
-      operation = {:apply_cell_delta, @cid, "c1", :primary, delta, 1}
+      operation = {:apply_cell_delta, @cid, "c1", :primary, delta, nil, 0}
       assert :error = Data.apply_operation(data, operation)
     end
 
@@ -3433,7 +3434,7 @@ defmodule Livebook.Session.DataTest do
         ])
 
       delta = Delta.new() |> Delta.insert("cats")
-      operation = {:apply_cell_delta, @cid, "c1", :primary, delta, 1}
+      operation = {:apply_cell_delta, @cid, "c1", :primary, delta, nil, 0}
 
       assert {:ok,
               %{
@@ -3458,11 +3459,11 @@ defmodule Livebook.Session.DataTest do
           {:client_join, client2_id, User.new()},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:apply_cell_delta, client1_id, "c1", :primary, delta1, 1}
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0}
         ])
 
       delta2 = Delta.new() |> Delta.insert("tea")
-      operation = {:apply_cell_delta, client2_id, "c1", :primary, delta2, 1}
+      operation = {:apply_cell_delta, client2_id, "c1", :primary, delta2, nil, 0}
 
       assert {:ok,
               %{
@@ -3475,7 +3476,7 @@ defmodule Livebook.Session.DataTest do
               }, _} = Data.apply_operation(data, operation)
     end
 
-    test "returns broadcast delta action with the transformed delta" do
+    test "returns broadcast delta action with the transformed delta and selection" do
       client1_id = "cid1"
       client2_id = "cid2"
 
@@ -3487,16 +3488,21 @@ defmodule Livebook.Session.DataTest do
           {:client_join, client2_id, User.new()},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:apply_cell_delta, client1_id, "c1", :primary, delta1, 1}
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0}
         ])
 
       delta2 = Delta.new() |> Delta.insert("tea")
-      operation = {:apply_cell_delta, client2_id, "c1", :primary, delta2, 1}
+      selection = Text.Selection.new([{1, 3}])
+      operation = {:apply_cell_delta, client2_id, "c1", :primary, delta2, selection, 0}
 
       transformed_delta2 = Delta.new() |> Delta.retain(4) |> Delta.insert("tea")
+      transformed_selection = Text.Selection.new([{5, 7}])
 
-      assert {:ok, _data, [{:report_delta, ^client2_id, _cell, :primary, ^transformed_delta2}]} =
-               Data.apply_operation(data, operation)
+      assert {:ok, _data,
+              [
+                {:report_delta, ^client2_id, _cell, :primary, ^transformed_delta2,
+                 ^transformed_selection}
+              ]} = Data.apply_operation(data, operation)
     end
 
     test "given single client, does not keep deltas" do
@@ -3510,7 +3516,7 @@ defmodule Livebook.Session.DataTest do
         ])
 
       delta = Delta.new() |> Delta.insert("cats")
-      operation = {:apply_cell_delta, client_id, "c1", :primary, delta, 1}
+      operation = {:apply_cell_delta, client_id, "c1", :primary, delta, nil, 0}
 
       assert {:ok,
               %{
@@ -3531,7 +3537,7 @@ defmodule Livebook.Session.DataTest do
         ])
 
       delta = Delta.new() |> Delta.insert("cats")
-      operation = {:apply_cell_delta, client1_id, "c1", :primary, delta, 1}
+      operation = {:apply_cell_delta, client1_id, "c1", :primary, delta, nil, 0}
 
       assert {:ok,
               %{
@@ -3552,7 +3558,7 @@ defmodule Livebook.Session.DataTest do
         ])
 
       delta = Delta.new() |> Delta.insert("cats")
-      operation = {:apply_cell_delta, @cid, "c1", :secondary, delta, 1}
+      operation = {:apply_cell_delta, @cid, "c1", :secondary, delta, nil, 0}
 
       assert {:ok,
               %{
@@ -3586,7 +3592,7 @@ defmodule Livebook.Session.DataTest do
           {:client_join, client1_id, User.new()},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:apply_cell_delta, client1_id, "c1", :primary, Delta.new(insert: "cats"), 1}
+          {:apply_cell_delta, client1_id, "c1", :primary, Delta.new(insert: "cats"), nil, 0}
         ])
 
       operation = {:report_cell_revision, client2_id, "c1", :primary, 1}
@@ -3617,7 +3623,7 @@ defmodule Livebook.Session.DataTest do
           {:client_join, client2_id, User.new()},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:apply_cell_delta, client1_id, "c1", :primary, delta1, 1}
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0}
         ])
 
       operation = {:report_cell_revision, client2_id, "c1", :primary, 1}
@@ -3666,14 +3672,14 @@ defmodule Livebook.Session.DataTest do
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}}
         ])
 
-      attrs = %{disable_formatting: true, reevaluate_automatically: true}
+      attrs = %{reevaluate_automatically: true}
       operation = {:set_cell_attributes, @cid, "c1", attrs}
 
       assert {:ok,
               %{
                 notebook: %{
                   sections: [
-                    %{cells: [%{disable_formatting: true, reevaluate_automatically: true}]}
+                    %{cells: [%{reevaluate_automatically: true}]}
                   ]
                 }
               }, _} = Data.apply_operation(data, operation)
@@ -3829,6 +3835,38 @@ defmodule Livebook.Session.DataTest do
                Data.apply_operation(data, operation)
 
       assert new_data.section_infos["setup-section"].evaluation_queue == MapSet.new([])
+    end
+
+    test "clears runtime-related state" do
+      data =
+        data_after_operations!([
+          {:set_smart_cell_definitions, @cid, @smart_cell_definitions},
+          {:set_runtime_connected_nodes, @cid, [:node@host]}
+        ])
+
+      runtime = connected_noop_runtime()
+      operation = {:set_runtime, @cid, runtime}
+
+      assert {:ok,
+              %{
+                smart_cell_definitions: [],
+                runtime_connected_nodes: []
+              }, []} = Data.apply_operation(data, operation)
+    end
+  end
+
+  describe "apply_operation/2 given :set_runtime_transient_state" do
+    test "sets the definitions and starts dead cells with matching kinds" do
+      data =
+        data_after_operations!([
+          {:set_runtime, @cid, connected_noop_runtime()}
+        ])
+
+      transient_state = %{state: "anything"}
+      operation = {:set_runtime_transient_state, @cid, transient_state}
+
+      assert {:ok, %{runtime_transient_state: ^transient_state}, _actions} =
+               Data.apply_operation(data, operation)
     end
   end
 
@@ -4219,7 +4257,24 @@ defmodule Livebook.Session.DataTest do
                Data.apply_operation(data, operation)
     end
 
-    test "changes status to :error when evaluation is aborted and returns recover action" do
+    test "changes status to :error when evaluation is aborted" do
+      data =
+        data_after_operations!(Data.new(mode: :app), [
+          {:insert_section, @cid, 0, "s1"},
+          {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
+          {:insert_cell, @cid, "s1", 1, :code, "c2", %{}},
+          {:set_runtime, @cid, connected_noop_runtime()},
+          evaluate_cells_operations(["setup"]),
+          {:queue_cells_evaluation, @cid, ["c1"]}
+        ])
+
+      operation = {:reflect_main_evaluation_failure, @cid}
+
+      assert {:ok, %{app_data: %{status: %{execution: :error}}}, [:app_report_status]} =
+               Data.apply_operation(data, operation)
+    end
+
+    test "returns recover action when fully executed and then aborted" do
       data =
         data_after_operations!(Data.new(mode: :app), [
           {:insert_section, @cid, 0, "s1"},
@@ -4233,6 +4288,22 @@ defmodule Livebook.Session.DataTest do
 
       assert {:ok, %{app_data: %{status: %{execution: :error}}},
               [:app_report_status, :app_recover]} = Data.apply_operation(data, operation)
+    end
+
+    test "changes status to :error when a non-connected runtime is set" do
+      data =
+        data_after_operations!(Data.new(mode: :app), [
+          {:insert_section, @cid, 0, "s1"},
+          {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
+          {:insert_cell, @cid, "s1", 1, :code, "c2", %{}},
+          {:set_runtime, @cid, connected_noop_runtime()},
+          {:queue_cells_evaluation, @cid, ["setup"]}
+        ])
+
+      operation = {:set_runtime, @cid, Livebook.Runtime.NoopRuntime.new()}
+
+      assert {:ok, %{app_data: %{status: %{execution: :error}}}, [:app_report_status]} =
+               Data.apply_operation(data, operation)
     end
 
     test "changes status to :error when evaluation finishes with error" do
@@ -4304,25 +4375,48 @@ defmodule Livebook.Session.DataTest do
       assert {:ok, %{app_data: %{status: %{lifecycle: :shutting_down}}}, [:app_terminate]} =
                Data.apply_operation(data, operation)
     end
+  end
 
-    test "does not automatically reevaluate" do
+  describe "transform_selection/2" do
+    test "transforms the selection against more recent revisions" do
+      client1_id = "cid1"
+      client2_id = "cid2"
+
+      delta1 = Delta.new() |> Delta.insert("cats")
+      delta2 = Delta.new() |> Delta.insert("tea")
+
       data =
-        data_after_operations!(Data.new(mode: :app), [
+        data_after_operations!([
+          {:client_join, client1_id, User.new()},
+          {:client_join, client2_id, User.new()},
           {:insert_section, @cid, 0, "s1"},
           {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:insert_cell, @cid, "s1", 1, :code, "c2", %{}},
-          {:set_cell_attributes, @cid, "c2", %{reevaluate_automatically: true}},
-          {:set_runtime, @cid, connected_noop_runtime()},
-          evaluate_cells_operations(["setup"]),
-          {:queue_cells_evaluation, @cid, ["c1"]},
-          {:add_cell_evaluation_response, @cid, "c1", @input, eval_meta()},
-          evaluate_cells_operations(["c2"], bind_inputs: %{"c2" => ["i1"]})
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0},
+          {:apply_cell_delta, client1_id, "c1", :primary, delta2, nil, 1}
         ])
 
-      operation = {:set_input_value, @cid, "i1", "stuff"}
+      selection = Text.Selection.new([{1, 3}])
 
-      assert {:ok, %{app_data: %{status: %{execution: :executed}}}, _actions} =
-               Data.apply_operation(data, operation)
+      assert Data.transform_selection(data, "c1", :primary, selection, 1) ==
+               Text.Selection.new([{4, 6}])
+    end
+
+    test "keeps the selection unchanged if the revision is already latest" do
+      client1_id = "cid1"
+
+      delta1 = Delta.new() |> Delta.insert("cats")
+
+      data =
+        data_after_operations!([
+          {:client_join, client1_id, User.new()},
+          {:insert_section, @cid, 0, "s1"},
+          {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
+          {:apply_cell_delta, client1_id, "c1", :primary, delta1, nil, 0}
+        ])
+
+      selection = Text.Selection.new([{1, 3}])
+
+      assert Data.transform_selection(data, "c1", :primary, selection, 1) == selection
     end
   end
 
@@ -4368,7 +4462,7 @@ defmodule Livebook.Session.DataTest do
           ),
           # Modify cell 2
           {:client_join, @cid, User.new()},
-          {:apply_cell_delta, @cid, "c2", :primary, Delta.new() |> Delta.insert("cats"), 1}
+          {:apply_cell_delta, @cid, "c2", :primary, Delta.new() |> Delta.insert("cats"), nil, 0}
         ])
 
       assert Data.cell_ids_for_full_evaluation(data, []) |> Enum.sort() == ["c2", "c4"]

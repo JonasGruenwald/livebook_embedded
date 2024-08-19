@@ -52,8 +52,10 @@ defmodule LivebookWeb.Router do
   scope "/public", LivebookWeb do
     pipe_through [:js_view_assets]
 
-    get "/sessions/assets/:hash/*file_parts", SessionController, :show_cached_asset
     get "/sessions/:id/assets/:hash/*file_parts", SessionController, :show_asset
+    get "/sessions/node/:node_id/assets/:hash/*file_parts", SessionController, :show_cached_asset
+    get "/sessions/audio-input/:token", SessionController, :show_input_audio
+    get "/sessions/image-input/:token", SessionController, :show_input_image
   end
 
   live_session :default,
@@ -75,32 +77,31 @@ defmodule LivebookWeb.Router do
 
       live "/apps-dashboard", AppsDashboardLive, :page
 
-      live "/hub", Hub.NewLive, :new, as: :hub
-      live "/hub/:id", Hub.EditLive, :edit, as: :hub
-      live "/hub/:id/env-var/new", Hub.EditLive, :add_env_var, as: :hub
-      live "/hub/:id/env-var/edit/:env_var_id", Hub.EditLive, :edit_env_var, as: :hub
-      live "/hub/:id/secrets/new", Hub.EditLive, :new_secret, as: :hub
-      live "/hub/:id/secrets/edit/:secret_name", Hub.EditLive, :edit_secret, as: :hub
-      live "/hub/:id/file-systems/new", Hub.EditLive, :new_file_system, as: :hub
-      live "/hub/:id/file-systems/edit/:file_system_id", Hub.EditLive, :edit_file_system, as: :hub
+      live "/hub", Hub.NewLive, :new
+      live "/hub/:id", Hub.EditLive, :edit
+      live "/hub/:id/env-var/new", Hub.EditLive, :add_env_var
+      live "/hub/:id/env-var/edit/:env_var_id", Hub.EditLive, :edit_env_var
+      live "/hub/:id/secrets/new", Hub.EditLive, :new_secret
+      live "/hub/:id/secrets/edit/:secret_name", Hub.EditLive, :edit_secret
+      live "/hub/:id/file-systems/new", Hub.EditLive, :new_file_system
+      live "/hub/:id/file-systems/edit/:file_system_id", Hub.EditLive, :edit_file_system
+      live "/hub/:id/groups/new", Hub.EditLive, :new_deployment_group
 
-      live "/hub/:id/deployment-groups/new", Hub.Teams.DeploymentGroupLive, :new_deployment_group,
-        as: :hub
+      live "/hub/:id/groups/:deployment_group_id/agents/new",
+           Hub.EditLive,
+           :new_deployment_group_agent
 
-      live "/hub/:id/deployment-groups/edit/:deployment_group_id",
-           Hub.Teams.DeploymentGroupLive,
-           :edit_deployment_group,
-           as: :hub
+      live "/hub/:id/groups/:deployment_group_id/apps/new",
+           Hub.EditLive,
+           :new_deployment_group_app
 
-      live "/hub/:id/deployment-groups/edit/:deployment_group_id/secrets/new",
-           Hub.Teams.DeploymentGroupLive,
-           :new_secret,
-           as: :hub
+      live "/hub/:id/groups/:deployment_group_id/secrets/new",
+           Hub.EditLive,
+           :new_deployment_group_secret
 
-      live "/hub/:id/deployment-groups/edit/:deployment_group_id/secrets/edit/:secret_name",
-           Hub.Teams.DeploymentGroupLive,
-           :edit_secret,
-           as: :hub
+      live "/hub/:id/groups/:deployment_group_id/secrets/edit/:secret_name",
+           Hub.EditLive,
+           :edit_deployment_group_secret
 
       live "/sessions/:id", SessionLive, :page
       live "/sessions/:id/shortcuts", SessionLive, :shortcuts
@@ -109,6 +110,8 @@ defmodule LivebookWeb.Router do
       live "/sessions/:id/settings/file", SessionLive, :file_settings
       live "/sessions/:id/settings/app", SessionLive, :app_settings
       live "/sessions/:id/app-docker", SessionLive, :app_docker
+      live "/sessions/:id/app-teams", SessionLive, :app_teams
+      live "/sessions/:id/app-teams-hub-info", SessionLive, :app_teams_hub_info
       live "/sessions/:id/add-file/:tab", SessionLive, :add_file_entry
       live "/sessions/:id/rename-file/:name", SessionLive, :rename_file_entry
       live "/sessions/:id/bin", SessionLive, :bin
@@ -119,10 +122,7 @@ defmodule LivebookWeb.Router do
       live "/sessions/:id/insert-file", SessionLive, :insert_file
       live "/sessions/:id/package-search", SessionLive, :package_search
       get "/sessions/:id/files/:name", SessionController, :show_file
-      get "/sessions/:id/images/:name", SessionController, :show_image
       get "/sessions/:id/download/files/:name", SessionController, :download_file
-      get "/sessions/audio-input/:token", SessionController, :show_input_audio
-      get "/sessions/image-input/:token", SessionController, :show_input_image
       live "/sessions/:id/settings/custom-view", SessionLive, :custom_view_settings
       live "/sessions/:id/*path_parts", SessionLive, :catch_all
     end
@@ -146,8 +146,8 @@ defmodule LivebookWeb.Router do
       live "/apps/:slug/new", AppLive, :new_session
       live "/apps/:slug/authenticate", AppAuthLive, :page
 
-      live "/apps/:slug/:id", AppSessionLive, :page
-      live "/apps/:slug/:id/source", AppSessionLive, :source
+      live "/apps/:slug/sessions/:id", AppSessionLive, :page
+      live "/apps/:slug/sessions/:id/source", AppSessionLive, :source
 
       live "/apps", AppsLive, :page
     end

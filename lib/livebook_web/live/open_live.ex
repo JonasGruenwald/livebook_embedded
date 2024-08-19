@@ -3,7 +3,7 @@ defmodule LivebookWeb.OpenLive do
 
   import LivebookWeb.SessionHelpers
 
-  alias LivebookWeb.LayoutHelpers
+  alias LivebookWeb.LayoutComponents
   alias Livebook.{Sessions, Notebook, FileSystem}
 
   on_mount LivebookWeb.SidebarHook
@@ -18,6 +18,12 @@ defmodule LivebookWeb.OpenLive do
     sessions = Sessions.list_sessions() |> Enum.filter(&(&1.mode == :default))
     recent_notebooks = Livebook.NotebookManager.recent_notebooks()
 
+    show_autosave_note? =
+      case Livebook.Settings.autosave_path() do
+        nil -> false
+        path -> match?({:ok, [_ | _]}, File.ls(path))
+      end
+
     {:ok,
      assign(socket,
        tab: "file",
@@ -25,28 +31,33 @@ defmodule LivebookWeb.OpenLive do
        url: params["url"],
        sessions: sessions,
        recent_notebooks: recent_notebooks,
-       page_title: "Open - Livebook"
+       page_title: "Open - Livebook",
+       show_autosave_note?: show_autosave_note?
      )}
   end
 
   @impl true
   def render(assigns) do
     ~H"""
-    <LayoutHelpers.layout current_page={~p"/"} current_user={@current_user} saved_hubs={@saved_hubs}>
+    <LayoutComponents.layout
+      current_page={~p"/"}
+      current_user={@current_user}
+      saved_hubs={@saved_hubs}
+    >
       <:topbar_action>
-        <.link class="button-base button-blue" navigate={~p"/new"}>
-          <.remix_icon icon="add-line" class="align-middle mr-1" />
+        <.button color="blue" navigate={~p"/new"}>
+          <.remix_icon icon="add-line" />
           <span>New notebook</span>
-        </.link>
+        </.button>
       </:topbar_action>
       <div class="p-4 md:px-12 md:py-6 max-w-screen-lg mx-auto space-y-4">
         <div class="flex flex-row space-y-0 items-center pb-4 justify-between">
-          <LayoutHelpers.title text="Open notebook" back_navigate={~p"/"} />
+          <LayoutComponents.title text="Open notebook" back_navigate={~p"/"} />
           <div class="hidden md:flex" role="navigation" aria-label="new notebook">
-            <.link class="button-base button-blue" navigate={~p"/new"}>
-              <.remix_icon icon="add-line" class="align-middle mr-1" />
+            <.button color="blue" navigate={~p"/new"}>
+              <.remix_icon icon="add-line" />
               <span>New notebook</span>
-            </.link>
+            </.button>
           </div>
         </div>
 
@@ -126,7 +137,8 @@ defmodule LivebookWeb.OpenLive do
               </:card_icon>
             </.live_component>
           <% end %>
-          <div class="mt-3 text-gray-600 text-sm">
+
+          <div :if={@show_autosave_note?} class="mt-3 text-gray-600 text-sm">
             Looking for unsaved notebooks? <.link
               class="font-semibold"
               navigate={~p"/open/storage?autosave=true"}
@@ -135,7 +147,7 @@ defmodule LivebookWeb.OpenLive do
           </div>
         </div>
       </div>
-    </LayoutHelpers.layout>
+    </LayoutComponents.layout>
     """
   end
 
@@ -249,7 +261,7 @@ defmodule LivebookWeb.OpenLive do
   defp file_from_params(_params), do: Livebook.Settings.default_dir()
 
   defp import_source(socket, source, session_opts) do
-    {notebook, messages} = Livebook.LiveMarkdown.notebook_from_livemd(source)
+    {notebook, %{warnings: messages}} = Livebook.LiveMarkdown.notebook_from_livemd(source)
 
     socket =
       socket

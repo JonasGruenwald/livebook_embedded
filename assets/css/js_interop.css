@@ -136,9 +136,7 @@ solely client-side operations.
   left: calc(-45vw + 50%);
 }
 
-[data-el-cell][data-js-amplified]
-  [data-el-amplify-outputs-button]
-  .icon-button {
+[data-el-cell][data-js-amplified] [data-el-amplify-outputs-button] > button {
   @apply bg-gray-100 text-gray-900;
 }
 
@@ -180,7 +178,7 @@ solely client-side operations.
 
 [data-el-cell][data-type="smart"][data-js-source-visible]
   [data-el-toggle-source-button]
-  .icon-button {
+  > button {
   @apply bg-gray-100 text-gray-900;
 }
 
@@ -246,6 +244,11 @@ solely client-side operations.
   @apply hidden;
 }
 
+[data-el-session][data-js-side-panel-content="runtime-info"]
+  [data-el-runtime-indicator] {
+  @apply border-gray-700;
+}
+
 [data-el-session]:not([data-js-side-panel-content="app-info"])
   [data-el-app-info] {
   @apply hidden;
@@ -281,20 +284,11 @@ solely client-side operations.
   @apply text-gray-50 bg-gray-700;
 }
 
-[data-el-session][data-js-side-panel-content="app-info"]
-  [data-el-app-indicator] {
-  @apply border-gray-700;
-}
-
 [data-el-clients-list-item]:not([data-js-followed]) [data-meta="unfollow"] {
   @apply hidden;
 }
 
 [data-el-clients-list-item][data-js-followed] [data-meta="follow"] {
-  @apply hidden;
-}
-
-[phx-hook="VirtualizedLines"]:not(:hover) [data-el-clipcopy] {
   @apply hidden;
 }
 

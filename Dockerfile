@@ -80,7 +80,7 @@ RUN mix local.hex --force && \
 
 # Override the default 127.0.0.1 address, so that the app
 # can be accessed outside the container by binding ports
-ENV LIVEBOOK_IP 0.0.0.0
+ENV LIVEBOOK_IP "::"
 
 ENV LIVEBOOK_HOME=/data
 
@@ -93,4 +93,6 @@ RUN chmod -R go=u /app
 # Make all home files available (specifically .mix/)
 RUN chmod -R go=u $HOME
 
-CMD [ "/app/bin/livebook", "start" ]
+HEALTHCHECK CMD wget --no-verbose --tries=1 --spider http://localhost:${LIVEBOOK_PORT-8080}/public/health || exit 1
+
+CMD [ "/app/bin/server" ]

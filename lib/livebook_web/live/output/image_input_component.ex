@@ -43,7 +43,7 @@ defmodule LivebookWeb.Output.ImageInputComponent do
     # LV. This is especially important for client-specific inputs in
     # forms.
     token = LivebookWeb.SessionHelpers.generate_input_token(self(), input_id)
-    ~p"/sessions/image-input/#{token}"
+    ~p"/public/sessions/image-input/#{token}"
   end
 
   @impl true
@@ -82,13 +82,10 @@ defmodule LivebookWeb.Output.ImageInputComponent do
         <div class="mt-4 flex items-center justify-center gap-4">
           <.menu id={"#{@id}-camera-select-menu"} position={:bottom_left}>
             <:toggle>
-              <button
-                class="button-base button-gray border-transparent py-2 px-4 inline-flex text-gray-500"
-                data-btn-open-camera
-              >
-                <.remix_icon icon="camera-line" class="text-lg leading-none mr-2" />
+              <.button color="gray" data-btn-open-camera>
+                <.remix_icon icon="camera-line" />
                 <span>Open camera</span>
-              </button>
+              </.button>
             </:toggle>
             <div data-camera-list>
               <.menu_item>
@@ -98,34 +95,25 @@ defmodule LivebookWeb.Output.ImageInputComponent do
               </.menu_item>
             </div>
           </.menu>
-          <button
-            class="hidden button-base button-gray border-transparent py-2 px-4 inline-flex text-gray-500"
-            data-btn-capture-camera
-          >
-            <.remix_icon icon="camera-line" class="text-lg leading-none mr-2" />
+          <.button color="gray" class="hidden" data-btn-capture-camera>
+            <.remix_icon icon="camera-line" />
             <span>Take photo</span>
-          </button>
-          <button
-            class="hidden button-base button-gray border-transparent py-2 px-4 inline-flex text-gray-500"
-            data-btn-cancel
-          >
-            <.remix_icon icon="close-circle-line" class="text-lg leading-none mr-2" />
+          </.button>
+          <.button color="gray" class="hidden" data-btn-cancel>
+            <.remix_icon icon="close-circle-line" />
             <span>Cancel</span>
-          </button>
-          <button
-            class="button-base button-gray border-transparent py-2 px-4 inline-flex text-gray-500"
-            data-btn-upload
-          >
-            <.remix_icon icon="upload-2-line" class="text-lg leading-none mr-2" />
+          </.button>
+          <.button color="gray" data-btn-upload>
+            <.remix_icon icon="upload-2-line" />
             <span>Upload</span>
-          </button>
+          </.button>
         </div>
       </div>
       <form phx-change="validate" class="hidden" phx-target={@myself}>
         <.live_file_input upload={@uploads.file} />
       </form>
       <div :for={entry <- @uploads.file.entries} class="delay-200 flex flex-col gap-1">
-        <.file_entry name="Audio" entry={entry} on_clear={JS.push("clear_file", target: @myself)} />
+        <.file_entry name="Image" entry={entry} on_clear={JS.push("clear_file", target: @myself)} />
       </div>
     </div>
     """

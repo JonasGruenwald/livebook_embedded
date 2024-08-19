@@ -65,7 +65,7 @@ defmodule Livebook.LiveMarkdown do
   #     * Elixir
   #     * PostgreSQL
   #
-  #     <!-- livebook:{"disable_formatting":true} -->
+  #     <!-- livebook:{"reevaluate_automatically":true} -->
   #
   #     ```elixir
   #     Enum.to_list(1..10)
@@ -104,6 +104,7 @@ defmodule Livebook.LiveMarkdown do
   Returns the notebook structure and a list of informative messages/warnings
   related to the imported input.
   """
-  @spec notebook_from_livemd(String.t()) :: {Notebook.t(), list(String.t())}
+  @spec notebook_from_livemd(String.t()) ::
+          {Notebook.t(), %{warnings: list(String.t()), stamp_verified?: boolean()}}
   defdelegate notebook_from_livemd(markdown), to: Livebook.LiveMarkdown.Import
 end

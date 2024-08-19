@@ -32,10 +32,6 @@ defmodule LivebookWeb.SessionLive.PersistenceComponent do
      |> put_new_attr(:autosave_interval_s, autosave_interval_s)}
   end
 
-  def update(%{event: :confirm_file}, socket) do
-    {:ok, save(socket)}
-  end
-
   def update(assigns, socket) do
     {file, assigns} = Map.pop!(assigns, :file)
     {persist_outputs, assigns} = Map.pop!(assigns, :persist_outputs)
@@ -67,7 +63,7 @@ defmodule LivebookWeb.SessionLive.PersistenceComponent do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="p-6 flex flex-col space-y-8">
+    <div class="flex flex-col space-y-8">
       <h3 class="text-2xl font-semibold text-gray-800">
         Save to file
       </h3>
@@ -80,7 +76,7 @@ defmodule LivebookWeb.SessionLive.PersistenceComponent do
             hub={@hub}
             extnames={[LiveMarkdown.extension()]}
             running_files={@running_files}
-            submit_event={:confirm_file}
+            on_submit={JS.push("save", target: @myself)}
             target={{__MODULE__, @id}}
           />
         </div>
@@ -119,26 +115,20 @@ defmodule LivebookWeb.SessionLive.PersistenceComponent do
       </div>
       <div class="flex justify-between">
         <div class="flex space-x-3">
-          <button
-            class="button-base button-blue"
+          <.button
             phx-click="save"
             phx-target={@myself}
             disabled={not savable?(@draft_file, @saved_file, @running_files)}
           >
             Save
-          </button>
-          <.link patch={~p"/sessions/#{@session.id}"} class="button-base button-outlined-gray">
+          </.button>
+          <.button color="gray" outlined patch={~p"/sessions/#{@session.id}"}>
             Cancel
-          </.link>
+          </.button>
         </div>
-        <button
-          :if={@saved_file}
-          class="button-base button-outlined-red"
-          phx-click="stop_saving"
-          phx-target={@myself}
-        >
+        <.button :if={@saved_file} color="red" outlined phx-click="stop_saving" phx-target={@myself}>
           Stop saving to file
-        </button>
+        </.button>
       </div>
     </div>
     """
@@ -187,10 +177,15 @@ defmodule LivebookWeb.SessionLive.PersistenceComponent do
 
     Session.save_sync(assigns.session.pid)
 
-    # We can't do push_patch from update/2, so we ask the LV to do so
-    send(self(), {:push_patch, ~p"/sessions/#{assigns.session.id}"})
+    push_patch(socket, to: return_to(assigns))
+  end
 
-    socket
+  defp return_to(assigns) do
+    if context = assigns.context do
+      ~p"/sessions/#{assigns.session.id}/#{context}"
+    else
+      ~p"/sessions/#{assigns.session.id}"
+    end
   end
 
   defp parse_optional_integer(string) do

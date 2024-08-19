@@ -1,11 +1,11 @@
 import { parseHookProps } from "../lib/attribute";
 import {
   isElementHidden,
-  isElementVisibleInViewport,
   randomId,
   randomToken,
+  waitUntilInViewport,
 } from "../lib/utils";
-import { globalPubSub } from "../lib/pub_sub";
+import { globalPubsub } from "../lib/pubsub";
 import {
   getChannel,
   transportDecode,
@@ -104,7 +104,7 @@ const JSView = {
       (raw) => {
         const [, payload] = transportDecode(raw);
         this.handleServerInit(payload);
-      }
+      },
     );
 
     const eventRef = this.channel.on(`event:${this.props.ref}`, (raw) => {
@@ -116,7 +116,7 @@ const JSView = {
       `error:${this.props.ref}`,
       ({ message, init }) => {
         this.handleServerError(message, init);
-      }
+      },
     );
 
     const pongRef = this.channel.on(`pong:${this.props.ref}`, () => {
@@ -130,10 +130,16 @@ const JSView = {
       this.channel.off(`pong:${this.props.ref}`, pongRef);
     };
 
-    this.unsubscribeFromJSViewEvents = globalPubSub.subscribe(
-      `js_views:${this.props.ref}`,
-      (event) => this.handleJSViewEvent(event)
-    );
+    this.subscriptions = [
+      globalPubsub.subscribe(
+        `js_views:${this.props.ref}`,
+        this.handleJSViewEvent.bind(this),
+      ),
+      globalPubsub.subscribe(
+        "navigation",
+        this.handleNavigationEvent.bind(this),
+      ),
+    ];
 
     this.channel.push(
       "connect",
@@ -144,12 +150,7 @@ const JSView = {
       },
       // If the client is very busy with executing JS we may reach the
       // default timeout of 10s, so we increase it
-      30_000
-    );
-
-    this.unsubscribeFromCellEvents = globalPubSub.subscribe(
-      "navigation",
-      (event) => this.handleNavigationEvent(event)
+      30_000,
     );
   },
 
@@ -170,8 +171,7 @@ const JSView = {
     this.unsubscribeFromChannelEvents();
     this.channel.push("disconnect", { ref: this.props.ref });
 
-    this.unsubscribeFromJSViewEvents();
-    this.unsubscribeFromCellEvents();
+    this.subscriptions.forEach((subscription) => subscription.destroy());
   },
 
   getProps() {
@@ -213,33 +213,46 @@ const JSView = {
 
     const notebookEl = document.querySelector(`[data-el-notebook]`);
     const notebookContentEl = notebookEl.querySelector(
-      `[data-el-notebook-content]`
+      `[data-el-notebook-content]`,
     );
 
-    // Most placeholder position changes are accompanied by changes to the
-    // notebook content element height (adding cells, inserting newlines
-    // in the editor, etc). On the other hand, toggling the sidebar or
-    // resizing the window changes the width, however the notebook
-    // content element doesn't span full width, so this change may not
-    // be detected, that's why we observe the full-width parent element
+    // Most placeholder position changes are accompanied by changes
+    // to the notebook content element height (adding cells, inserting
+    // newlines in the editor, etc). On the other hand, toggling the
+    // sidebar or resizing the window changes the width, however the
+    // notebook content element doesn't span full width, so this change
+    // may not be detected, that's why we observe the full-width parent
+    // element as well
     const resizeObserver = new ResizeObserver((entries) => {
       this.repositionIframe();
     });
     resizeObserver.observe(notebookContentEl);
     resizeObserver.observe(notebookEl);
 
+    // The placeholder may be hidden, in which case we want to hide
+    // the iframe as well. This could be the case when viewing the
+    // Smart cell source or in tabs output. It is possible that the
+    // change does not actually change the notebook height, so we
+    // also watch the placeholder directly
+    let isPlaceholderHidden = isElementHidden(this.iframePlaceholder);
+    const placeholderResizeObserver = new ResizeObserver((entries) => {
+      let isPlaceholderHiddenNow = isElementHidden(this.iframePlaceholder);
+      if (isPlaceholderHidden !== isPlaceholderHiddenNow) {
+        isPlaceholderHidden = isPlaceholderHiddenNow;
+        this.repositionIframe();
+      }
+    });
+    placeholderResizeObserver.observe(this.iframePlaceholder);
+
     // On certain events, like section/cell moved, a global event is
     // dispatched to trigger reposition. This way we don't need to
     // use deep MutationObserver, which would be expensive, especially
     // with code editor
-    const unsubscribeFromJSViewsEvents = globalPubSub.subscribe(
-      "js_views",
-      (event) => {
-        if (event.type === "reposition") {
-          this.repositionIframe();
-        }
+    const jsViewSubscription = globalPubsub.subscribe("js_views", (event) => {
+      if (event.type === "reposition") {
+        this.repositionIframe();
       }
-    );
+    });
 
     // Emulate mouse enter and leave on the placeholder. Note that we
     // intentionally use bubbling to notify all parents that may have
@@ -247,53 +260,43 @@ const JSView = {
 
     this.iframe.addEventListener("mouseenter", (event) => {
       this.iframePlaceholder.dispatchEvent(
-        new MouseEvent("mouseenter", { bubbles: true })
+        new MouseEvent("mouseenter", { bubbles: true }),
       );
     });
 
     this.iframe.addEventListener("mouseleave", (event) => {
       this.iframePlaceholder.dispatchEvent(
-        new MouseEvent("mouseleave", { bubbles: true })
+        new MouseEvent("mouseleave", { bubbles: true }),
       );
     });
 
     // We detect when the placeholder enters viewport and becomes visible,
     // based on that we can load the iframe contents lazily
 
-    let viewportIntersectionObserver = null;
-
-    const visibilityPromise = new Promise((resolve, reject) => {
-      if (isElementVisibleInViewport(this.iframePlaceholder)) {
-        resolve();
-      } else {
-        viewportIntersectionObserver = new IntersectionObserver((entries) => {
-          if (isElementVisibleInViewport(this.iframePlaceholder)) {
-            viewportIntersectionObserver.disconnect();
-            resolve();
-          }
-        });
-        viewportIntersectionObserver.observe(this.iframePlaceholder);
-      }
+    const visibility = waitUntilInViewport(this.iframePlaceholder, {
+      root: notebookEl,
+      proximity: 2000,
     });
 
     // Reflect focus based on whether there is a focused parent, this
     // is later synced on "element_focused" events
     this.iframe.toggleAttribute(
       "data-js-focused",
-      !!this.el.closest(`[data-js-focused]`)
+      !!this.el.closest(`[data-js-focused]`),
     );
 
     // Cleanup
 
     const remove = () => {
       resizeObserver.disconnect();
-      unsubscribeFromJSViewsEvents();
-      viewportIntersectionObserver && viewportIntersectionObserver.disconnect();
+      placeholderResizeObserver.disconnect();
+      jsViewSubscription.destroy();
+      visibility.cancel();
       this.iframe.remove();
       this.iframePlaceholder.remove();
     };
 
-    return { visibilityPromise, remove };
+    return { visibilityPromise: visibility.promise, remove };
   },
 
   repositionIframe() {
@@ -322,7 +325,7 @@ const JSView = {
     initializeIframeSource(
       this.iframe,
       this.props.iframePort,
-      this.props.iframeUrl
+      this.props.iframeUrl,
     ).then(() => {
       iframesEl.appendChild(this.iframe);
     });
@@ -377,12 +380,6 @@ const JSView = {
           js_view_ref: this.props.ref,
           preselect_name: message.preselectName,
           options: message.options,
-        });
-      } else if (message.type === "setSmartCellEditorIntellisenseNode") {
-        this.pushEvent("set_smart_cell_editor_intellisense_node", {
-          js_view_ref: this.props.ref,
-          node: message.node,
-          cookie: message.cookie,
         });
       }
     }
@@ -497,7 +494,7 @@ const JSView = {
 
       this.iframe.toggleAttribute(
         "data-js-focused",
-        focusableId === event.focusableId
+        focusableId === event.focusableId,
       );
     }
   },
@@ -510,9 +507,11 @@ const JSView = {
  * once and the response is cached.
  */
 function cachedPublicEndpointCheck() {
+  const healthUrl = window.LIVEBOOK_BASE_URL_PATH + "/public/health";
+
   cachedPublicEndpointCheck.promise =
     cachedPublicEndpointCheck.promise ||
-    fetch("/public/health")
+    fetch(healthUrl)
       .then((response) => response.status === 200)
       .catch((error) => false);
 

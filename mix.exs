@@ -5,8 +5,8 @@ end
 defmodule Livebook.MixProject do
   use Mix.Project
 
-  @elixir_requirement "~> 1.15.2 or ~> 1.16-dev"
-  @version "0.12.1"
+  @elixir_requirement "~> 1.16"
+  @version "0.13.3"
   @description "Automate code & data workflows with interactive notebooks"
 
   def project do
@@ -28,7 +28,7 @@ defmodule Livebook.MixProject do
 
       # Docs
       homepage_url: "https://livebook.dev",
-      docs: docs()
+      docs: &docs/0
     ]
   end
 
@@ -65,9 +65,9 @@ defmodule Livebook.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get", "cmd npm install --prefix assets"],
+      setup: ["deps.get", "cmd --cd assets npm install"],
       "assets.deploy": ["cmd npm run deploy --prefix assets"],
-      "format.all": ["format", "cmd npm run format --prefix assets"],
+      "format.all": ["format", "cmd --cd assets npm run format"],
       "protobuf.generate": ["cmd --cd proto mix protobuf.generate"]
     ]
   end
@@ -99,23 +99,23 @@ defmodule Livebook.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.7.8"},
-      {:phoenix_live_view, "~> 0.20.2"},
-      # {:phoenix_live_view, github: "phoenixframework/phoenix_live_view", override: true},
-      {:phoenix_html, "~> 3.0"},
-      {:phoenix_live_dashboard, "~> 0.8.0"},
-      {:telemetry_metrics, "~> 0.4"},
+      {:phoenix_live_view, "~> 1.0.0-rc.0"},
+      {:phoenix_html, "~> 4.0"},
+      {:phoenix_live_dashboard, "~> 0.8.4-rc.0"},
+      {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.0"},
       {:bandit, "~> 1.0"},
+      {:plug, "~> 1.16"},
       {:plug_crypto, "~> 2.0"},
       {:earmark_parser, "~> 1.4"},
       {:ecto, "~> 3.10"},
       {:phoenix_ecto, "~> 4.4"},
-      {:aws_credentials, "~> 0.1.11", runtime: false},
+      {:aws_credentials, "~> 0.3.0", runtime: false},
       {:aws_signature, "~> 0.3.0"},
       {:mint_web_socket, "~> 1.0.0"},
-      {:protobuf, "~> 0.8.0"},
-      {:dns_cluster, "~> 0.1.1"},
+      {:protobuf, "~> 0.12.0"},
+      {:dns_cluster, "~> 0.1.2"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:floki, ">= 0.27.0", only: :test},
       {:bypass, "~> 2.1", only: :test},
@@ -207,10 +207,11 @@ defmodule Livebook.MixProject do
       extra_section: "Guides",
       extras: extras(),
       filter_modules: fn mod, _ -> mod in [Livebook] end,
-      assets: Path.expand("./docs/images"),
+      assets: %{Path.expand("./docs/images") => "images"},
       groups_for_extras: [
         "Livebook Teams": Path.wildcard("docs/teams/*"),
-        Deployment: Path.wildcard("docs/deployment/*")
+        Deployment: Path.wildcard("docs/deployment/*"),
+        Authentication: Path.wildcard("docs/authentication/*")
       ]
     ]
   end
@@ -218,14 +219,20 @@ defmodule Livebook.MixProject do
   defp extras() do
     [
       {"README.md", title: "Welcome to Livebook"},
+      "docs/use_cases.md",
       "docs/authentication.md",
       "docs/deployment/docker.md",
-      "docs/deployment/cloudflare.md",
-      "docs/deployment/google_iap.md",
-      "docs/deployment/tailscale.md",
+      "docs/deployment/clustering.md",
+      "docs/deployment/fips.md",
+      "docs/deployment/nginx_https.md",
       "docs/teams/intro_to_teams.md",
       "docs/teams/shared_secrets.md",
-      "docs/teams/shared_file_storages.md"
+      "docs/teams/shared_file_storages.md",
+      "docs/authentication/basic_auth.md",
+      "docs/authentication/cloudflare.md",
+      "docs/authentication/google_iap.md",
+      "docs/authentication/tailscale.md",
+      "docs/authentication/custom_auth.md"
     ]
   end
 end

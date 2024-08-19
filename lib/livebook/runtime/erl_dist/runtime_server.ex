@@ -130,7 +130,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
           pid(),
           Runtime.intellisense_request(),
           Runtime.Runtime.parent_locators(),
-          {String.t(), String.t()} | nil
+          {atom(), atom()} | nil
         ) :: reference()
   def handle_intellisense(pid, send_to, request, parent_locators, node) do
     ref = make_ref()
@@ -180,7 +180,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
             {:transfer, target_path, target_pid} ->
               try do
                 path
-                |> File.stream!([], 2048)
+                |> File.stream!(2048, [])
                 |> Enum.each(fn chunk -> IO.binwrite(target_pid, chunk) end)
 
                 target_path
@@ -294,6 +294,45 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   end
 
   @doc """
+  Restores information from a past runtime.
+  """
+  @spec restore_transient_state(pid(), Runtime.transient_state()) :: :ok
+  def restore_transient_state(pid, transient_state) do
+    GenServer.cast(pid, {:restore_transient_state, transient_state})
+  end
+
+  @doc """
+  Notifies the runtime about connected clients.
+  """
+  @spec register_clients(pid(), list({Runtime.client_id(), Runtime.user_info()})) :: :ok
+  def register_clients(pid, clients) do
+    GenServer.cast(pid, {:register_clients, clients})
+  end
+
+  @doc """
+  Notifies the runtime about clients leaving.
+  """
+  @spec unregister_clients(pid(), list(Runtime.client_id())) :: :ok
+  def unregister_clients(pid, client_ids) do
+    GenServer.cast(pid, {:unregister_clients, client_ids})
+  end
+
+  @doc """
+  Fetches information about a proxy request handler, if available.
+  """
+  @spec fetch_proxy_handler_spec(pid()) ::
+          {:ok, {module(), atom(), list()}} | {:error, :not_found}
+  def fetch_proxy_handler_spec(pid) do
+    with {:ok, supervisor_pid} <- GenServer.call(pid, :fetch_proxy_handler_supervisor) do
+      {:ok, {Livebook.Proxy.Server, :serve, [supervisor_pid]}}
+    end
+  end
+
+  def disconnect_node(pid, node) do
+    GenServer.cast(pid, {:disconnect_node, node})
+  end
+
+  @doc """
   Stops the runtime server.
 
   This results in all Livebook-related modules being unloaded
@@ -312,7 +351,8 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
 
     {:ok, evaluator_supervisor} = ErlDist.EvaluatorSupervisor.start_link()
     {:ok, task_supervisor} = Task.Supervisor.start_link()
-    {:ok, object_tracker} = Livebook.Runtime.Evaluator.ObjectTracker.start_link()
+    {:ok, object_tracker} = Evaluator.ObjectTracker.start_link()
+    {:ok, client_tracker} = Evaluator.ClientTracker.start_link()
 
     {:ok,
      %{
@@ -322,20 +362,25 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
        evaluator_supervisor: evaluator_supervisor,
        task_supervisor: task_supervisor,
        object_tracker: object_tracker,
+       client_tracker: client_tracker,
        smart_cell_supervisor: nil,
        smart_cell_gl: nil,
        smart_cells: %{},
+       # Always send the first smart cell definitions report, in case
+       # there are extra definitions
        smart_cell_definitions: nil,
        smart_cell_definitions_module:
          Keyword.get(opts, :smart_cell_definitions_module, Kino.SmartCell),
        extra_smart_cell_definitions: Keyword.get(opts, :extra_smart_cell_definitions, []),
+       connected_nodes: [],
        memory_timer_ref: nil,
        last_evaluator: nil,
        base_env_path:
          Keyword.get_lazy(opts, :base_env_path, fn -> System.get_env("PATH", "") end),
        ebin_path: Keyword.get(opts, :ebin_path),
        io_proxy_registry: Keyword.get(opts, :io_proxy_registry),
-       tmp_dir: Keyword.get(opts, :tmp_dir)
+       tmp_dir: Keyword.get(opts, :tmp_dir),
+       mix_install_project_dir: nil
      }}
   end
 
@@ -370,7 +415,8 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   def handle_info({:evaluation_finished, locator}, state) do
     {:noreply,
      state
-     |> report_smart_cell_definitions()
+     |> report_environment()
+     |> report_transient_state()
      |> scan_binding_after_evaluation(locator)}
   end
 
@@ -441,7 +487,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     Process.monitor(owner)
 
     state = %{state | owner: owner, runtime_broadcast_to: opts[:runtime_broadcast_to]}
-    state = report_smart_cell_definitions(state)
+    state = report_environment(state)
     report_memory_usage(state)
 
     {:ok, smart_cell_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
@@ -638,6 +684,24 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     {:noreply, state}
   end
 
+  def handle_cast({:restore_transient_state, transient_state}, state) do
+    if dir = transient_state[:mix_install_project_dir] do
+      System.put_env("MIX_INSTALL_RESTORE_PROJECT_DIR", dir)
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_cast({:register_clients, clients}, state) do
+    Evaluator.ClientTracker.register_clients(state.client_tracker, clients)
+    {:noreply, state}
+  end
+
+  def handle_cast({:unregister_clients, client_ids}, state) do
+    Evaluator.ClientTracker.unregister_clients(state.client_tracker, client_ids)
+    {:noreply, state}
+  end
+
   def handle_cast({:relabel_file, file_id, new_file_id}, state) do
     path = file_path(state, file_id)
     new_path = file_path(state, new_file_id)
@@ -651,6 +715,11 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     File.rm(target_path)
 
     {:noreply, state}
+  end
+
+  def handle_cast({:disconnect_node, node}, state) do
+    Node.disconnect(node)
+    {:noreply, report_connected_nodes(state)}
   end
 
   @impl true
@@ -698,6 +767,14 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     {:reply, has_dependencies?, state}
   end
 
+  def handle_call(:fetch_proxy_handler_supervisor, _from, state) do
+    if supervisor_pid = Livebook.Proxy.Handler.get_supervisor_pid() do
+      {:reply, {:ok, supervisor_pid}, state}
+    else
+      {:reply, {:error, :not_found}, state}
+    end
+  end
+
   defp file_path(state, file_id) do
     if tmp_dir = state.tmp_dir do
       Path.join([tmp_dir, "files", file_id])
@@ -720,6 +797,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
           send_to: state.owner,
           runtime_broadcast_to: state.runtime_broadcast_to,
           object_tracker: state.object_tracker,
+          client_tracker: state.client_tracker,
           ebin_path: state.ebin_path,
           tmp_dir: evaluator_tmp_dir(state),
           io_proxy_registry: state.io_proxy_registry
@@ -751,6 +829,12 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     send(state.owner, {:runtime_memory_usage, Evaluator.memory()})
   end
 
+  defp report_environment(state) do
+    state
+    |> report_smart_cell_definitions()
+    |> report_connected_nodes()
+  end
+
   defp report_smart_cell_definitions(state) do
     smart_cell_definitions = get_smart_cell_definitions(state.smart_cell_definitions_module)
 
@@ -771,11 +855,43 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     end
   end
 
+  defp report_connected_nodes(state) do
+    owner_node = node(state.owner)
+    nodes = Node.list(:connected) |> List.delete(owner_node) |> Enum.sort()
+
+    if nodes == state.connected_nodes do
+      state
+    else
+      send(state.owner, {:runtime_connected_nodes, nodes})
+
+      %{state | connected_nodes: nodes}
+    end
+  end
+
   defp get_smart_cell_definitions(module) do
     if Code.ensure_loaded?(module) and function_exported?(module, :definitions, 0) do
       module.definitions()
     else
       []
+    end
+  end
+
+  defp report_transient_state(state) do
+    # We propagate Mix.install/2 project dir in the transient state,
+    # so that future runtimes can set it as the starting point for
+    # Mix.install/2
+    if dir = state.mix_install_project_dir == nil && install_project_dir() do
+      send(state.owner, {:runtime_transient_state, %{mix_install_project_dir: dir}})
+      %{state | mix_install_project_dir: dir}
+    else
+      state
+    end
+  end
+
+  defp install_project_dir() do
+    # TODO: remove the check once we require Elixir v1.16.2
+    if Code.ensure_loaded?(Mix) && function_exported?(Mix, :install_project_dir, 0) do
+      Mix.install_project_dir()
     end
   end
 
@@ -910,7 +1026,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   end
 
   defp file_md5(path) do
-    File.stream!(path, [], 2048)
+    File.stream!(path, 2048, [])
     |> Enum.reduce(:erlang.md5_init(), &:erlang.md5_update(&2, &1))
     |> :erlang.md5_final()
   end
@@ -921,7 +1037,6 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   end
 
   defp intellisense_node({node, cookie}) do
-    {node, cookie} = {String.to_atom(node), String.to_atom(cookie)}
     Node.set_cookie(node, cookie)
     if Node.connect(node), do: node, else: node()
   end

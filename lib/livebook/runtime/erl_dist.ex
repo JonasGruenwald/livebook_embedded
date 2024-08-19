@@ -27,6 +27,7 @@ defmodule Livebook.Runtime.ErlDist do
       Livebook.Runtime.Evaluator.IOProxy,
       Livebook.Runtime.Evaluator.Tracer,
       Livebook.Runtime.Evaluator.ObjectTracker,
+      Livebook.Runtime.Evaluator.ClientTracker,
       Livebook.Runtime.Evaluator.Formatter,
       Livebook.Runtime.Evaluator.Doctests,
       Livebook.Intellisense,
@@ -40,7 +41,9 @@ defmodule Livebook.Runtime.ErlDist do
       Livebook.Runtime.ErlDist.IOForwardGL,
       Livebook.Runtime.ErlDist.LoggerGLHandler,
       Livebook.Runtime.ErlDist.Sink,
-      Livebook.Runtime.ErlDist.SmartCellGL
+      Livebook.Runtime.ErlDist.SmartCellGL,
+      Livebook.Proxy.Adapter,
+      Livebook.Proxy.Handler
     ]
   end
 

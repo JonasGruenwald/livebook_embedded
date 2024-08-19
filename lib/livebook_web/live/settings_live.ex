@@ -1,7 +1,7 @@
 defmodule LivebookWeb.SettingsLive do
   use LivebookWeb, :live_view
 
-  alias LivebookWeb.LayoutHelpers
+  alias LivebookWeb.LayoutComponents
 
   on_mount LivebookWeb.SidebarHook
 
@@ -27,7 +27,7 @@ defmodule LivebookWeb.SettingsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <LayoutHelpers.layout
+    <LayoutComponents.layout
       current_page={~p"/settings"}
       current_user={@current_user}
       saved_hubs={@saved_hubs}
@@ -36,7 +36,7 @@ defmodule LivebookWeb.SettingsLive do
         <!-- System settings section -->
         <div class="flex flex-col space-y-10">
           <div>
-            <LayoutHelpers.title text="System settings" />
+            <LayoutComponents.title text="System settings" />
             <p class="mt-4 text-gray-700">
               Here you can change global Livebook configuration. Keep in mind
               that this configuration gets persisted and will be restored on application
@@ -68,10 +68,10 @@ defmodule LivebookWeb.SettingsLive do
               </div>
 
               <div class="self-center">
-                <.link navigate={~p"/dashboard"} class="button-base button-outlined-gray">
-                  <.remix_icon icon="dashboard-2-line" class="align-middle mr-1" />
+                <.button navigate={~p"/dashboard"} color="gray" outlined>
+                  <.remix_icon icon="dashboard-2-line" />
                   <span>Open dashboard</span>
-                </.link>
+                </.button>
               </div>
             </div>
           </div>
@@ -103,25 +103,32 @@ defmodule LivebookWeb.SettingsLive do
             <h2 class="text-xl text-gray-800 font-medium pb-2 border-b border-gray-200">
               Environment variables
             </h2>
+
             <p class="mt-4 text-gray-700">
               Environment variables store global values, specific to this
               Livebook instance, which are available inside your notebooks.
               You can also configure the <code>PATH</code> environment to
               make system dependencies available to notebooks.
             </p>
+
             <.live_component
               module={LivebookWeb.SettingsLive.EnvVarsComponent}
               id="env-vars"
               env_vars={@env_vars}
               return_to={~p"/settings"}
-              add_env_var_path={~p"/settings/env-var/new"}
             />
+
+            <div>
+              <.button patch={~p"/settings/env-var/new"} id="add-env-var">
+                Add environment variable
+              </.button>
+            </div>
           </div>
         </div>
         <!-- User settings section -->
         <div class="flex flex-col space-y-10 pb-8">
           <div>
-            <LayoutHelpers.title text="User settings" />
+            <LayoutComponents.title text="User settings" />
             <p class="mt-4 text-gray-700">
               The configuration in this section changes only your Livebook
               experience and is saved in your browser.
@@ -149,6 +156,7 @@ defmodule LivebookWeb.SettingsLive do
                 value={false}
               />
               <.switch_field name="editor_font_size" label="Increase font size" value={false} />
+              <.switch_field name="editor_ligatures" label="Render ligatures" value={false} />
               <.switch_field name="editor_light_theme" label="Use light theme" value={false} />
               <.switch_field
                 name="editor_markdown_word_wrap"
@@ -175,7 +183,7 @@ defmodule LivebookWeb.SettingsLive do
           </div>
         </div>
       </div>
-    </LayoutHelpers.layout>
+    </LayoutComponents.layout>
 
     <.modal
       :if={@live_action in [:add_env_var, :edit_env_var]}
@@ -195,7 +203,15 @@ defmodule LivebookWeb.SettingsLive do
     """
   end
 
-  defp autosave_path_select(%{state: %{file: nil}} = assigns), do: ~H""
+  defp autosave_path_select(%{state: %{file: nil}} = assigns) do
+    ~H"""
+    <div>
+      <.button color="gray" id="enable-autosave" phx-click="open_autosave_path_select">
+        Enable
+      </.button>
+    </div>
+    """
+  end
 
   defp autosave_path_select(%{state: %{dialog_opened?: true}} = assigns) do
     ~H"""
@@ -206,24 +222,24 @@ defmodule LivebookWeb.SettingsLive do
         file={@state.file}
         extnames={[]}
         running_files={[]}
-        submit_event={:set_autosave_path}
+        on_submit={JS.push("set_autosave_path")}
         file_system_select_disabled={true}
         target={self()}
       >
-        <button class="button-base button-gray" phx-click="cancel_autosave_path" tabindex="-1">
+        <.button id="cancel-autosave" color="gray" phx-click="cancel_autosave_path" tabindex="-1">
           Cancel
-        </button>
-        <button class="button-base button-gray" phx-click="reset_autosave_path" tabindex="-1">
+        </.button>
+        <.button id="reset-autosave" color="gray" phx-click="reset_autosave_path" tabindex="-1">
           Reset
-        </button>
-        <button
-          class="button-base button-blue"
+        </.button>
+        <.button
+          id="save-autosave"
           phx-click="set_autosave_path"
           disabled={not Livebook.FileSystem.File.dir?(@state.file)}
           tabindex="-1"
         >
           Save
-        </button>
+        </.button>
       </.live_component>
     </div>
     """
@@ -231,11 +247,13 @@ defmodule LivebookWeb.SettingsLive do
 
   defp autosave_path_select(assigns) do
     ~H"""
-    <div class="flex">
-      <input class="input mr-2" readonly value={@state.file.path} />
-      <button class="button-base button-gray" phx-click="open_autosave_path_select">
+    <div class="flex gap-2">
+      <div class="grow">
+        <.text_field name={nil} readonly value={@state.file.path} />
+      </div>
+      <.button color="gray" id="change-autosave" phx-click="open_autosave_path_select">
         Change
-      </button>
+      </.button>
     </div>
     """
   end
@@ -282,7 +300,12 @@ defmodule LivebookWeb.SettingsLive do
   end
 
   def handle_event("open_autosave_path_select", %{}, socket) do
-    {:noreply, update(socket, :autosave_path_state, &%{&1 | dialog_opened?: true})}
+    {:noreply,
+     update(
+       socket,
+       :autosave_path_state,
+       &%{&1 | dialog_opened?: true, file: &1.file || default_autosave_dir()}
+     )}
   end
 
   def handle_event("save", %{"update_check_enabled" => enabled}, socket) do
@@ -325,10 +348,6 @@ defmodule LivebookWeb.SettingsLive do
   @impl true
   def handle_info({:set_file, file, _info}, socket) do
     {:noreply, update(socket, :autosave_path_state, &%{&1 | file: file})}
-  end
-
-  def handle_info(:set_autosave_path, socket) do
-    handle_event("set_autosave_path", %{}, socket)
   end
 
   def handle_info({:env_var_set, env_var}, socket) do

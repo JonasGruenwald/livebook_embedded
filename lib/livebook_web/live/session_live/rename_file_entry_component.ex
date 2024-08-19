@@ -25,7 +25,7 @@ defmodule LivebookWeb.SessionLive.RenameFileEntryComponent do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="p-6 max-w-4xl flex flex-col space-y-4">
+    <div class="flex flex-col space-y-4">
       <h3 class="text-2xl font-semibold text-gray-800">
         Rename file
       </h3>
@@ -47,13 +47,13 @@ defmodule LivebookWeb.SessionLive.RenameFileEntryComponent do
           autofocus
         />
         <div class="mt-6 flex space-x-3">
-          <button class="button-base button-blue" type="submit" disabled={not @changeset.valid?}>
+          <.button type="submit" disabled={not @changeset.valid?}>
             <.spinner class="hidden phx-submit-loading:block mr-2" />
             <span>Rename</span>
-          </button>
-          <.link patch={~p"/sessions/#{@session.id}"} class="button-base button-outlined-gray">
+          </.button>
+          <.button color="gray" outlined patch={~p"/sessions/#{@session.id}"}>
             Cancel
-          </.link>
+          </.button>
         </div>
       </.form>
     </div>

@@ -8,14 +8,16 @@ import {
   cancelEvent,
   isElementInViewport,
   isElementHidden,
+  pop,
+  isSafari,
 } from "../lib/utils";
 import { parseHookProps } from "../lib/attribute";
 import KeyBuffer from "../lib/key_buffer";
-import { globalPubSub } from "../lib/pub_sub";
-import monaco from "./cell_editor/live_editor/monaco";
+import { globalPubsub } from "../lib/pubsub";
 import { leaveChannel } from "./js_view/channel";
 import { isDirectlyEditable, isEvaluable } from "../lib/notebook";
 import { settingsStore } from "../lib/settings";
+import { LiveStore } from "../lib/live_store";
 
 /**
  * A hook managing the whole session.
@@ -51,20 +53,23 @@ import { settingsStore } from "../lib/settings";
  * ## Location tracking and following
  *
  * Location describes where the given client is within the notebook
- * (in which cell, and where specifically in that cell). When multiple
- * clients are connected, they report own location to each other
- * whenever it changes. We then each the location to show cursor and
- * selection indicators.
+ * (in which cell). When multiple clients are connected, they report
+ * own location to each other whenever it changes. The user can jump
+ * to the cell focused by any other client.
  *
  * Additionally the current user may follow another client from the
  * clients list. In such case, whenever a new location comes from that
- * client we move there automatically (i.e. we focus the same cells
- * to effectively mimic how the followed client moves around).
+ * client we move there automatically, that is we focus the same cells
+ * to effectively mimic how the followed client moves around.
+ *
+ * Note that cursor and selection tracking is handled separately by
+ * each editor, as it involves transforming the positions with local
+ * and incoming remote changes.
  *
  * Initially we load basic information about connected clients using
  * the `"session_init"` event and then update this information whenever
- * clients join/leave/update. This way location reports include only
- * client id, as we already have the necessary hex_color/name locally.
+ * clients join/leave/update. This way subsequent messages only include
+ * the client id and we already have the necessary color/name locally.
  */
 const Session = {
   mounted() {
@@ -75,9 +80,9 @@ const Session = {
     this.view = null;
     this.viewOptions = null;
     this.keyBuffer = new KeyBuffer();
-    this.clientsMap = {};
     this.lastLocationReportByClientId = {};
     this.followedClientId = null;
+    this.store = LiveStore.create("session");
 
     setFavicon(this.faviconForEvaluationStatus(this.props.globalStatus));
 
@@ -86,11 +91,17 @@ const Session = {
     // DOM events
 
     this._handleDocumentKeyDown = this.handleDocumentKeyDown.bind(this);
+    this._handleEditorEscape = this.handleEditorEscape.bind(this);
     this._handleDocumentMouseDown = this.handleDocumentMouseDown.bind(this);
     this._handleDocumentFocus = this.handleDocumentFocus.bind(this);
     this._handleDocumentClick = this.handleDocumentClick.bind(this);
 
+    // Note: we register for the capture phase, so that we handle the
+    // event before the editor. Specifically, in case of Ctrl + Enter
+    // we want to evaluate the cell and cancel the event, so that the
+    // editor doesn't insert a newline
     document.addEventListener("keydown", this._handleDocumentKeyDown, true);
+    document.addEventListener("lb:editor_escape", this._handleEditorEscape);
     document.addEventListener("mousedown", this._handleDocumentMouseDown);
     // Note: the focus event doesn't bubble, so we register for the capture phase
     document.addEventListener("focus", this._handleDocumentFocus, true);
@@ -102,39 +113,39 @@ const Session = {
     });
 
     this.getElement("clients-list").addEventListener("click", (event) =>
-      this.handleClientsListClick(event)
+      this.handleClientsListClick(event),
     );
 
     this.getElement("sections-list-toggle").addEventListener("click", (event) =>
-      this.toggleSectionsList()
+      this.toggleSectionsList(),
     );
 
     this.getElement("clients-list-toggle").addEventListener("click", (event) =>
-      this.toggleClientsList()
+      this.toggleClientsList(),
     );
 
     this.getElement("secrets-list-toggle").addEventListener("click", (event) =>
-      this.toggleSecretsList()
+      this.toggleSecretsList(),
     );
 
     this.getElement("runtime-info-toggle").addEventListener("click", (event) =>
-      this.toggleRuntimeInfo()
+      this.toggleRuntimeInfo(),
     );
 
     this.getElement("app-info-toggle").addEventListener("click", (event) =>
-      this.toggleAppInfo()
+      this.toggleAppInfo(),
     );
 
     this.getElement("files-list-toggle").addEventListener("click", (event) =>
-      this.toggleFilesList()
+      this.toggleFilesList(),
     );
 
     this.getElement("notebook").addEventListener("scroll", (event) =>
-      this.updateSectionListHighlight()
+      this.updateSectionListHighlight(),
     );
 
     this.getElement("notebook-indicators").addEventListener("click", (event) =>
-      this.handleCellIndicatorsClick(event)
+      this.handleCellIndicatorsClick(event),
     );
 
     this.getElement("views").addEventListener("click", (event) => {
@@ -143,7 +154,7 @@ const Session = {
 
     this.getElement("section-toggle-collapse-all-button").addEventListener(
       "click",
-      (event) => this.toggleCollapseAllSections()
+      (event) => this.toggleCollapseAllSections(),
     );
 
     this.initializeDragAndDrop();
@@ -153,15 +164,23 @@ const Session = {
       () => {
         this.initializeFocus();
       },
-      { once: true }
+      { once: true },
     );
 
     // Server events
 
-    this.handleEvent("session_init", ({ clients }) => {
-      clients.forEach((client) => {
-        this.clientsMap[client.id] = client;
-      });
+    this.handleEvent("session_init", ({ clients, client_id }) => {
+      const clientsMap = {};
+
+      for (const client of clients) {
+        clientsMap[client.id] = client;
+      }
+
+      // Note that we keep clients in a global store, so that all cell
+      // hooks can access this information, without pushing it for each
+      // of them separately
+      this.store.set("clients", clientsMap);
+      this.store.set("clientId", client_id);
     });
 
     this.handleEvent("cell_inserted", ({ cell_id: cellId }) => {
@@ -172,7 +191,7 @@ const Session = {
       "cell_deleted",
       ({ cell_id: cellId, sibling_cell_id: siblingCellId }) => {
         this.handleCellDeleted(cellId, siblingCellId);
-      }
+      },
     );
 
     this.handleEvent("cell_restored", ({ cell_id: cellId }) => {
@@ -195,10 +214,6 @@ const Session = {
       this.handleSectionMoved(section_id);
     });
 
-    this.handleEvent("cell_upload", ({ cell_id, url }) => {
-      this.handleCellUpload(cell_id, url);
-    });
-
     this.handleEvent("client_joined", ({ client }) => {
       this.handleClientJoined(client);
     });
@@ -215,27 +230,13 @@ const Session = {
       "secret_selected",
       ({ select_secret_ref, secret_name }) => {
         this.handleSecretSelected(select_secret_ref, secret_name);
-      }
+      },
     );
 
-    this.handleEvent(
-      "location_report",
-      ({ client_id, focusable_id, selection }) => {
-        const report = {
-          focusableId: focusable_id,
-          selection: this.decodeSelection(selection),
-        };
-
-        this.handleLocationReport(client_id, report);
-      }
-    );
-
-    this.unsubscribeFromSessionEvents = globalPubSub.subscribe(
-      "session",
-      (event) => {
-        this.handleSessionEvent(event);
-      }
-    );
+    this.handleEvent("location_report", ({ client_id, focusable_id }) => {
+      const report = { focusableId: focusable_id };
+      this.handleLocationReport(client_id, report);
+    });
   },
 
   updated() {
@@ -257,9 +258,8 @@ const Session = {
   },
 
   destroyed() {
-    this.unsubscribeFromSessionEvents();
-
     document.removeEventListener("keydown", this._handleDocumentKeyDown, true);
+    document.removeEventListener("lb:editor_scape", this._handleEditorEscape);
     document.removeEventListener("mousedown", this._handleDocumentMouseDown);
     document.removeEventListener("focus", this._handleDocumentFocus, true);
     document.removeEventListener("click", this._handleDocumentClick);
@@ -269,6 +269,8 @@ const Session = {
     if (!this.keepChannel) {
       leaveChannel();
     }
+
+    this.store.destroy();
   },
 
   getProps() {
@@ -336,12 +338,13 @@ const Session = {
     if (this.insertMode) {
       keyBuffer.reset();
 
-      if (key === "Escape") {
-        // Ignore Escape if it's supposed to close an editor widget
-        if (!this.escapesMonacoWidget(event)) {
-          this.escapeInsertMode();
-        }
+      // We handle editor escape in a dedicated handler
+      const isEditor = !!event.target.closest(`[data-el-editor-container]`);
+
+      if (!isEditor && key === "Escape") {
+        this.escapeInsertMode();
       }
+
       // Ignore keystrokes on input fields
     } else if (isEditableElement(event.target)) {
       keyBuffer.reset();
@@ -390,7 +393,7 @@ const Session = {
       } else if (
         keyBuffer.tryMatch(["i"]) ||
         (event.target.matches(
-          `body, [data-el-cell-body], [data-el-heading], [data-focusable-id]`
+          `body, [data-el-cell-body], [data-el-heading], [data-focusable-id]`,
         ) &&
           this.focusedId &&
           key === "Enter")
@@ -437,39 +440,11 @@ const Session = {
     }
   },
 
-  escapesMonacoWidget(event) {
-    // Escape pressed in an editor input
-    if (event.target.closest(".monaco-inputbox")) {
-      return true;
+  handleEditorEscape() {
+    if (this.insertMode) {
+      this.keyBuffer.reset();
+      this.escapeInsertMode();
     }
-
-    const editor = event.target.closest(".monaco-editor.focused");
-
-    if (!editor) {
-      return false;
-    }
-
-    // Completion box open
-    if (editor.querySelector(".editor-widget.parameter-hints-widget.visible")) {
-      return true;
-    }
-
-    // Signature details open
-    if (editor.querySelector(".editor-widget.suggest-widget.visible")) {
-      return true;
-    }
-
-    // Multi-cursor selection enabled
-    if (editor.querySelectorAll(".cursor").length > 1) {
-      return true;
-    }
-
-    // Vim insert or visual mode
-    if (["insert", "visual"].includes(editor.dataset.vimMode)) {
-      return true;
-    }
-
-    return false;
   },
 
   /**
@@ -479,12 +454,17 @@ const Session = {
    * (e.g. if the user starts selecting some text within the editor)
    */
   handleDocumentMouseDown(event) {
-    if (
-      // If the click is outside the notebook element, keep the focus as is
-      !event.target.closest(`[data-el-notebook]`) ||
-      // If the click is inside the custom doctest editor widget, keep the focus as is
-      event.target.closest(`.doctest-details-widget`)
-    ) {
+    // If the click is outside the notebook element, keep the focus as is
+    if (!event.target.closest(`[data-el-notebook]`)) {
+      if (this.insertMode) {
+        this.setInsertMode(false);
+      }
+      return;
+    }
+
+    // If the click is inside an editor tooltip, exit insert mode to
+    // allow for text selection within the tooltip
+    if (event.target.closest(`.cm-tooltip`)) {
       if (this.insertMode) {
         this.setInsertMode(false);
       }
@@ -523,7 +503,7 @@ const Session = {
   editableElementClicked(event, focusableEl) {
     if (focusableEl) {
       const editableElement = event.target.closest(
-        `[data-el-editor-container], [data-el-heading]`
+        `[data-el-editor-container], [data-el-heading]`,
       );
       return editableElement && focusableEl.contains(editableElement);
     }
@@ -560,12 +540,12 @@ const Session = {
     }
 
     const evalButton = event.target.closest(
-      `[data-el-queue-cell-evaluation-button]`
+      `[data-el-queue-cell-evaluation-button]`,
     );
     if (evalButton) {
       const cellId = evalButton.getAttribute("data-cell-id");
       const disableDependenciesCache = evalButton.hasAttribute(
-        "data-disable-dependencies-cache"
+        "data-disable-dependencies-cache",
       );
       this.queueCellEvaluation(cellId, disableDependenciesCache);
     }
@@ -581,7 +561,7 @@ const Session = {
         history.pushState(
           null,
           document.title,
-          window.location.pathname + window.location.search
+          window.location.pathname + window.location.search,
         );
       }
     }
@@ -614,7 +594,7 @@ const Session = {
       }
 
       const clientFollowToggle = event.target.closest(
-        `[data-el-client-follow-toggle]`
+        `[data-el-client-follow-toggle]`,
       );
       if (clientFollowToggle) {
         this.handleClientFollowToggleClick(clientId, clientListItem);
@@ -628,7 +608,7 @@ const Session = {
 
   handleClientFollowToggleClick(clientId, clientListItem) {
     const followedClientListItem = this.el.querySelector(
-      `[data-el-clients-list-item][data-js-followed]`
+      `[data-el-clients-list-item][data-js-followed]`,
     );
 
     if (followedClientListItem) {
@@ -696,7 +676,7 @@ const Session = {
    */
   updateSectionListHighlight() {
     const currentListItem = this.el.querySelector(
-      `[data-el-sections-list-item][data-js-is-viewed]`
+      `[data-el-sections-list-item][data-js-is-viewed]`,
     );
 
     if (currentListItem) {
@@ -715,7 +695,7 @@ const Session = {
     if (viewedSection) {
       const sectionId = viewedSection.getAttribute("data-section-id");
       const listItem = this.el.querySelector(
-        `[data-el-sections-list-item][data-section-id="${sectionId}"]`
+        `[data-el-sections-list-item][data-section-id="${sectionId}"]`,
       );
       listItem.setAttribute("data-js-is-viewed", "");
     }
@@ -759,6 +739,17 @@ const Session = {
     });
 
     this.el.addEventListener("dragleave", (event) => {
+      // The related target should point to the newly entered element,
+      // and be null when the cursor leaves the window. However, in
+      // Safari the related target is always null (1), so we ignore
+      // the leave event altogether. The side effect is that dropping
+      // the file outside the window will keep the drop areas open and
+      // require page refresh to hide them, but the workaround is not
+      // worth its complexity, hence we accept this edge case.
+      //
+      // (1): https://stackoverflow.com/a/71744945
+      if (isSafari()) return;
+
       if (!this.el.contains(event.relatedTarget)) {
         stopDragging();
       }
@@ -808,7 +799,7 @@ const Session = {
 
     this.handleEvent("finish_file_drop", (event) => {
       const inputEl = document.querySelector(
-        `#add-file-entry-modal input[type="file"]`
+        `#add-file-entry-modal input[type="file"]`,
       );
 
       if (inputEl) {
@@ -928,7 +919,7 @@ const Session = {
       // If an evaluable cell is focused, we forward the evaluation
       // request to that cell, so it can synchronize itself before
       // sending the request to the server
-      globalPubSub.broadcast(`cells:${this.focusedId}`, {
+      globalPubsub.broadcast(`cells:${this.focusedId}`, {
         type: "dispatch_queue_evaluation",
         dispatch,
       });
@@ -996,7 +987,7 @@ const Session = {
       if (focusableIds.length > 0) {
         this.insertCellBelowFocusableId(
           focusableIds[focusableIds.length - 1],
-          type
+          type,
         );
       }
     }
@@ -1062,13 +1053,15 @@ const Session = {
       }
     }
 
-    globalPubSub.broadcast("navigation", {
+    globalPubsub.broadcast("navigation", {
       type: "element_focused",
       focusableId: focusableId,
       scroll,
     });
 
     this.setInsertMode(false);
+
+    this.sendLocationReport({ focusableId });
   },
 
   setInsertMode(insertModeEnabled) {
@@ -1078,14 +1071,9 @@ const Session = {
       this.el.setAttribute("data-js-insert-mode", "");
     } else {
       this.el.removeAttribute("data-js-insert-mode");
-
-      this.sendLocationReport({
-        focusableId: this.focusedId,
-        selection: null,
-      });
     }
 
-    globalPubSub.broadcast("navigation", {
+    globalPubsub.broadcast("navigation", {
       type: "insert_mode_changed",
       enabled: insertModeEnabled,
     });
@@ -1105,7 +1093,7 @@ const Session = {
       this.unsetView();
 
       if (view === "custom") {
-        this.unsubscribeCustomViewFromSettings();
+        this.customViewSettingsSubscription.destroy();
       }
     } else if (view === "code-zen") {
       this.setView(view, {
@@ -1122,7 +1110,7 @@ const Session = {
         spotlight: true,
       });
     } else if (view === "custom") {
-      this.unsubscribeCustomViewFromSettings = settingsStore.getAndSubscribe(
+      this.customViewSettingsSubscription = settingsStore.getAndSubscribe(
         (settings) => {
           this.setView(view, {
             showSection: settings.custom_view_show_section,
@@ -1130,7 +1118,7 @@ const Session = {
             showOutput: settings.custom_view_show_output,
             spotlight: settings.custom_view_spotlight,
           });
-        }
+        },
       );
 
       this.pushEvent("open_custom_view_settings");
@@ -1195,7 +1183,7 @@ const Session = {
 
   toggleCollapseAllSections() {
     const allCollapsed = this.getSections().every((section) =>
-      section.hasAttribute("data-js-collapsed")
+      section.hasAttribute("data-js-collapsed"),
     );
 
     this.getSections().forEach((section) => {
@@ -1238,7 +1226,7 @@ const Session = {
     this.repositionJSViews();
 
     if (this.focusedId === cellId) {
-      globalPubSub.broadcast("cells", { type: "cell_moved", cellId });
+      globalPubsub.broadcast("cells", { type: "cell_moved", cellId });
     }
   },
 
@@ -1265,32 +1253,18 @@ const Session = {
     smoothlyScrollToElement(section);
   },
 
-  handleCellUpload(cellId, url) {
-    if (this.focusedId !== cellId) {
-      this.setFocusedEl(cellId);
-    }
-
-    if (!this.insertMode) {
-      this.setInsertMode(true);
-    }
-
-    globalPubSub.broadcast("cells", { type: "cell_upload", cellId, url });
-  },
-
   handleClientJoined(client) {
-    this.clientsMap[client.id] = client;
+    const clientsMap = this.store.get("clients");
+    this.store.set("clients", { ...clientsMap, [client.id]: client });
   },
 
   handleClientLeft(clientId) {
-    const client = this.clientsMap[clientId];
+    const clientsMap = this.store.get("clients");
+    const client = clientsMap[clientId];
 
     if (client) {
-      delete this.clientsMap[clientId];
-
-      this.broadcastLocationReport(client, {
-        focusableId: null,
-        selection: null,
-      });
+      const [, newClientsMap] = pop(clientsMap, clientId);
+      this.store.set("clients", newClientsMap);
 
       if (client.id === this.followedClientId) {
         this.followedClientId = null;
@@ -1299,26 +1273,29 @@ const Session = {
   },
 
   handleClientsUpdated(updatedClients) {
-    updatedClients.forEach((client) => {
-      this.clientsMap[client.id] = client;
-    });
+    const clientsMap = this.store.get("clients");
+    const newClientsMap = { ...clientsMap };
+
+    for (const client of updatedClients) {
+      newClientsMap[client.id] = client;
+    }
+
+    this.store.set("clients", newClientsMap);
   },
 
   handleSecretSelected(select_secret_ref, secretName) {
-    globalPubSub.broadcast(`js_views:${select_secret_ref}`, {
+    globalPubsub.broadcast(`js_views:${select_secret_ref}`, {
       type: "secretSelected",
       secretName,
     });
   },
 
   handleLocationReport(clientId, report) {
-    const client = this.clientsMap[clientId];
+    const client = this.store.get("clients")[clientId];
 
     this.lastLocationReportByClientId[clientId] = report;
 
     if (client) {
-      this.broadcastLocationReport(client, report);
-
       if (
         client.id === this.followedClientId &&
         report.focusableId !== this.focusedId
@@ -1328,80 +1305,20 @@ const Session = {
     }
   },
 
-  // Session event handlers
-
-  handleSessionEvent(event) {
-    if (event.type === "cursor_selection_changed") {
-      this.sendLocationReport({
-        focusableId: event.focusableId,
-        selection: event.selection,
-      });
-    }
-  },
-
   repositionJSViews() {
-    globalPubSub.broadcast("js_views", { type: "reposition" });
-  },
-
-  /**
-   * Broadcast new location report coming from the server to all the cells.
-   */
-  broadcastLocationReport(client, report) {
-    globalPubSub.broadcast("navigation", {
-      type: "location_report",
-      client,
-      report,
-    });
+    globalPubsub.broadcast("js_views", { type: "reposition" });
   },
 
   /**
    * Sends local location report to the server.
    */
   sendLocationReport(report) {
-    const numberOfClients = Object.keys(this.clientsMap).length;
+    const numberOfClients = Object.keys(this.store.get("clients")).length;
 
     // Only send reports if there are other people to send to
     if (numberOfClients > 1) {
-      this.pushEvent("location_report", {
-        focusable_id: report.focusableId,
-        selection: this.encodeSelection(report.selection),
-      });
+      this.pushEvent("location_report", { focusable_id: report.focusableId });
     }
-  },
-
-  encodeSelection(selection) {
-    if (selection === null) return null;
-
-    const { tag, editorSelection } = selection;
-
-    return [
-      tag,
-      editorSelection.selectionStartLineNumber,
-      editorSelection.selectionStartColumn,
-      editorSelection.positionLineNumber,
-      editorSelection.positionColumn,
-    ];
-  },
-
-  decodeSelection(encoded) {
-    if (encoded === null) return null;
-
-    const [
-      tag,
-      selectionStartLineNumber,
-      selectionStartColumn,
-      positionLineNumber,
-      positionColumn,
-    ] = encoded;
-
-    const editorSelection = new monaco.Selection(
-      selectionStartLineNumber,
-      selectionStartColumn,
-      positionLineNumber,
-      positionColumn
-    );
-
-    return { tag, editorSelection };
   },
 
   // Helpers
@@ -1442,7 +1359,7 @@ const Session = {
   ensureVisibleFocusableEl(cellId) {
     const focusableEl = this.getFocusableEl(cellId);
     const allFocusableEls = Array.from(
-      this.el.querySelectorAll(`[data-focusable-id]`)
+      this.el.querySelectorAll(`[data-focusable-id]`),
     );
     const idx = allFocusableEls.indexOf(focusableEl);
     const visibleSibling = [
@@ -1474,13 +1391,13 @@ const Session = {
 
   getFocusableEls() {
     return Array.from(this.el.querySelectorAll(`[data-focusable-id]`)).filter(
-      (el) => !isElementHidden(el)
+      (el) => !isElementHidden(el),
     );
   },
 
   getFocusableIds() {
     return this.getFocusableEls().map((el) =>
-      el.getAttribute("data-focusable-id")
+      el.getAttribute("data-focusable-id"),
     );
   },
 
@@ -1501,7 +1418,7 @@ const Session = {
 
   getSectionById(sectionId) {
     return this.el.querySelector(
-      `[data-el-section][data-section-id="${sectionId}"]`
+      `[data-el-section][data-section-id="${sectionId}"]`,
     );
   },
 
@@ -1509,24 +1426,5 @@ const Session = {
     return this.el.querySelector(`[data-el-${name}]`);
   },
 };
-
-/**
- * Data of a specific LV client.
- *
- * @typedef Client
- * @type {Object}
- * @property {String} id
- * @property {String} hex_color
- * @property {String} name
- */
-
-/**
- * A report of the current location sent by one of the other clients.
- *
- * @typedef LocationReport
- * @type {Object}
- * @property {String|null} focusableId
- * @property {monaco.Selection|null} selection
- */
 
 export default Session;

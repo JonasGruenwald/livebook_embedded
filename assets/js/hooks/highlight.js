@@ -1,5 +1,5 @@
 import { parseHookProps } from "../lib/attribute";
-import { highlight } from "./cell_editor/live_editor/monaco";
+import { highlight } from "./cell_editor/live_editor/highlight";
 import { findChildOrThrow } from "../lib/utils";
 
 /**
@@ -39,10 +39,9 @@ const Highlight = {
   updateDOM() {
     const code = this.sourceEl.innerText;
 
-    highlight(code, this.props.language).then((html) => {
-      this.targetEl.innerHTML = html;
-      this.el.setAttribute("data-highlighted", "");
-    });
+    const html = highlight(code, this.props.language);
+    this.targetEl.innerHTML = html;
+    this.el.setAttribute("data-highlighted", "");
   },
 };
 

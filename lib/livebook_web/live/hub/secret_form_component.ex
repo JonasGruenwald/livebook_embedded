@@ -6,29 +6,32 @@ defmodule LivebookWeb.Hub.SecretFormComponent do
   alias Livebook.Secrets.Secret
 
   @impl true
+  def mount(socket) do
+    {:ok, assign(socket, error_message: nil)}
+  end
+
+  @impl true
   def update(assigns, socket) do
-    changeset =
-      Secrets.change_secret(%Secret{}, %{
-        name: assigns.secret_name,
-        value: assigns.secret_value
-      })
-
-    socket = assign(socket, assigns)
-
     {:ok,
-     assign(socket,
+     socket
+     |> assign(assigns)
+     |> assign_new(:changeset, fn ->
+       Secrets.change_secret(%Secret{}, %{
+         name: assigns.secret_name,
+         value: assigns.secret_value
+       })
+     end)
+     |> assign(
        title: title(socket),
-       button: button(socket),
-       changeset: changeset,
-       deployment_group_id: assigns[:deployment_group_id],
-       error_message: nil
+       button: button_attrs(socket),
+       deployment_group_id: assigns[:deployment_group_id]
      )}
   end
 
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="p-6 max-w-4xl flex flex-col space-y-5">
+    <div class="flex flex-col space-y-5">
       <h3 class="text-2xl font-semibold text-gray-800">
         <%= @title %>
       </h3>
@@ -69,13 +72,13 @@ defmodule LivebookWeb.Hub.SecretFormComponent do
             <.hidden_field field={f[:hub_id]} value={@hub.id} />
             <.hidden_field field={f[:deployment_group_id]} value={@deployment_group_id} />
             <div class="flex space-x-2">
-              <button class="button-base button-blue" type="submit" disabled={not @changeset.valid?}>
-                <.remix_icon icon={@button.icon} class="align-middle mr-1" />
+              <.button type="submit" disabled={not @changeset.valid?}>
+                <.remix_icon icon={@button.icon} />
                 <span class="font-normal"><%= @button.label %></span>
-              </button>
-              <.link patch={@return_to} class="button-base button-outlined-gray">
+              </.button>
+              <.button color="gray" outlined patch={@return_to}>
                 Cancel
-              </.link>
+              </.button>
             </div>
           </div>
         </.form>
@@ -86,8 +89,10 @@ defmodule LivebookWeb.Hub.SecretFormComponent do
 
   @impl true
   def handle_event("save", %{"secret" => attrs}, socket) do
-    with {:ok, secret} <- Secrets.update_secret(%Secret{}, attrs),
-         :ok <- set_secret(socket, secret) do
+    changeset = Secrets.change_secret(%Secret{}, attrs)
+
+    with {:ok, secret} <- Ecto.Changeset.apply_action(changeset, :insert),
+         :ok <- save_secret(socket, secret, changeset) do
       message =
         if socket.assigns.secret_name,
           do: "Secret #{secret.name} updated successfully",
@@ -98,8 +103,8 @@ defmodule LivebookWeb.Hub.SecretFormComponent do
        |> put_flash(:success, message)
        |> push_patch(to: socket.assigns.return_to)}
     else
-      {:error, changeset} ->
-        {:noreply, assign(socket, changeset: Map.replace!(changeset, :action, :validate))}
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, assign(socket, changeset: changeset)}
 
       {:transport_error, error} ->
         {:noreply, assign(socket, error_message: error)}
@@ -118,15 +123,23 @@ defmodule LivebookWeb.Hub.SecretFormComponent do
   defp title(%{assigns: %{secret_name: nil}}), do: "Add secret"
   defp title(_), do: "Edit secret"
 
-  defp button(%{assigns: %{secret_name: nil}}), do: %{icon: "add-line", label: "Add"}
-  defp button(_), do: %{icon: "save-line", label: "Save"}
+  defp button_attrs(%{assigns: %{secret_name: nil}}), do: %{icon: "add-line", label: "Add"}
+  defp button_attrs(_), do: %{icon: "save-line", label: "Save"}
 
-  defp set_secret(%{assigns: %{secret_name: nil}} = socket, %Secret{} = secret) do
-    Hubs.create_secret(socket.assigns.hub, secret)
-  end
+  defp save_secret(socket, secret, changeset) do
+    result =
+      if socket.assigns.secret_name do
+        Hubs.update_secret(socket.assigns.hub, secret)
+      else
+        Hubs.create_secret(socket.assigns.hub, secret)
+      end
 
-  defp set_secret(socket, %Secret{} = secret) do
-    Hubs.update_secret(socket.assigns.hub, secret)
+    with {:error, errors} <- result do
+      {:error,
+       changeset
+       |> Livebook.Utils.put_changeset_errors(errors)
+       |> Map.replace!(:action, :validate)}
+    end
   end
 
   defp secret_name_input_class(nil), do: "uppercase"

@@ -114,15 +114,15 @@ defmodule Livebook do
       config :livebook, LivebookWeb.Endpoint, url: [path: base_url_path]
     end
 
-    cond do
-      password = Livebook.Config.password!("LIVEBOOK_PASSWORD") ->
-        config :livebook, authentication_mode: :password, password: password
-
-      Livebook.Config.boolean!("LIVEBOOK_TOKEN_ENABLED", true) ->
-        config :livebook, token: Livebook.Utils.random_long_id()
-
-      true ->
-        config :livebook, authentication_mode: :disabled
+    if password = Livebook.Config.password!("LIVEBOOK_PASSWORD") do
+      config :livebook, :authentication, {:password, password}
+    else
+      case Livebook.Config.boolean!("LIVEBOOK_TOKEN_ENABLED", nil) do
+        true -> config :livebook, :authentication, :token
+        false -> config :livebook, :authentication, :disabled
+        # Keep the environment-specific default
+        nil -> :ok
+      end
     end
 
     if port = Livebook.Config.port!("LIVEBOOK_IFRAME_PORT") do
@@ -147,6 +147,10 @@ defmodule Livebook do
 
     if Livebook.Config.boolean!("LIVEBOOK_AWS_CREDENTIALS", false) do
       config :livebook, :aws_credentials, true
+    end
+
+    if Livebook.Config.boolean!("LIVEBOOK_EPMDLESS", false) do
+      config :livebook, :epmdless, true
     end
 
     config :livebook,
@@ -195,13 +199,21 @@ defmodule Livebook do
       config :livebook, :cacertfile, cacertfile
     end
 
+    config :livebook, :rewrite_on, Livebook.Config.rewrite_on!("LIVEBOOK_PROXY_HEADERS")
+
     config :livebook,
            :cookie,
-           Livebook.Config.cookie!("LIVEBOOK_COOKIE") ||
-             Livebook.Config.cookie!("RELEASE_COOKIE") ||
-             Livebook.Utils.random_cookie()
+           Livebook.Config.cookie!("LIVEBOOK_COOKIE") || Livebook.Utils.random_cookie()
 
-    if node = Livebook.Config.node!("LIVEBOOK_NODE", "LIVEBOOK_DISTRIBUTION") do
+    # TODO: remove in v1.0
+    if System.get_env("LIVEBOOK_DISTRIBUTION") == "sname" do
+      IO.warn(
+        ~s/Ignoring LIVEBOOK_DISTRIBUTION=sname, because short names are no longer supported./,
+        []
+      )
+    end
+
+    if node = Livebook.Config.node!("LIVEBOOK_NODE") do
       config :livebook, :node, node
     end
 
@@ -229,6 +241,20 @@ defmodule Livebook do
     if dns_cluster_query = Livebook.Config.dns_cluster_query!("LIVEBOOK_CLUSTER") do
       config :livebook, :dns_cluster_query, dns_cluster_query
     end
+
+    if agent_name = Livebook.Config.agent_name!("LIVEBOOK_AGENT_NAME") do
+      config :livebook, :agent_name, agent_name
+    end
+
+    if Livebook.Config.boolean!("LIVEBOOK_FIPS", false) do
+      if :crypto.enable_fips_mode(true) do
+        IO.puts("[Livebook] FIPS mode enabled")
+      else
+        Livebook.Config.abort!(
+          "Requested FIPS mode via LIVEBOOK_FIPS, but this Erlang installation was compiled without FIPS support"
+        )
+      end
+    end
   end
 
   @doc """
@@ -247,7 +273,7 @@ defmodule Livebook do
   """
   @spec live_markdown_to_elixir(String.t()) :: String.t()
   def live_markdown_to_elixir(markdown) do
-    {notebook, _messages} = Livebook.LiveMarkdown.notebook_from_livemd(markdown)
+    {notebook, _info} = Livebook.LiveMarkdown.notebook_from_livemd(markdown)
     Livebook.Notebook.Export.Elixir.notebook_to_elixir(notebook)
   end
 end

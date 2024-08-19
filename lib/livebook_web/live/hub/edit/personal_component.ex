@@ -3,7 +3,7 @@ defmodule LivebookWeb.Hub.Edit.PersonalComponent do
 
   alias Livebook.Hubs
   alias Livebook.Hubs.Personal
-  alias LivebookWeb.LayoutHelpers
+  alias LivebookWeb.LayoutComponents
   alias LivebookWeb.NotFoundError
 
   @impl true
@@ -45,15 +45,15 @@ defmodule LivebookWeb.Hub.Edit.PersonalComponent do
     ~H"""
     <div class="p-4 md:px-12 md:py-7 max-w-screen-md mx-auto">
       <div id={"#{@id}-component"}>
+        <div class="mb-8 flex flex-col space-y-2">
+          <LayoutComponents.title text={"#{@hub.hub_emoji} #{@hub.hub_name}"} />
+
+          <p class="text-gray-700 text-sm">
+            Your personal workspace. All data is stored on your machine and only you can access it.
+          </p>
+        </div>
+
         <div class="mb-8 flex flex-col space-y-10">
-          <div class="flex flex-col space-y-2">
-            <LayoutHelpers.title text={"#{@hub.hub_emoji} #{@hub.hub_name}"} />
-
-            <p class="text-gray-700 text-sm">
-              Your personal hub. All data is stored on your machine and only you can access it.
-            </p>
-          </div>
-
           <div class="flex flex-col space-y-4">
             <h2 class="text-xl text-gray-800 font-medium pb-2 border-b border-gray-200">
               General
@@ -62,25 +62,23 @@ defmodule LivebookWeb.Hub.Edit.PersonalComponent do
             <.form
               :let={f}
               id={@id}
-              class="flex flex-col mt-4 space-y-4"
+              class="flex flex-col md:flex-row mt-4 space-y-4 md:space-x-2 md:space-y-0"
               for={@changeset}
               phx-submit="save"
               phx-change="validate"
               phx-target={@myself}
             >
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div class="flex-auto">
                 <.text_field field={f[:hub_name]} label="Name" />
+              </div>
+              <div class="min-w-48">
                 <.emoji_field field={f[:hub_emoji]} label="Emoji" />
               </div>
-              <div>
-                <button
-                  class="button-base button-blue"
-                  type="submit"
-                  phx-disable-with="Updating..."
-                  disabled={not @changeset.valid?}
-                >
+
+              <div class="!mt-6">
+                <.button type="submit" phx-disable-with="Updating..." disabled={not @changeset.valid?}>
                   Save
-                </button>
+                </.button>
               </div>
             </.form>
           </div>
@@ -91,9 +89,8 @@ defmodule LivebookWeb.Hub.Edit.PersonalComponent do
             </h2>
 
             <p class="text-gray-700">
-              Secrets are a safe way to share credentials and tokens with notebooks.
-              They are often used by Smart cells and can be read as
-              environment variables using the <code>LB_</code> prefix.
+              Secrets are a safe way to allow notebooks to access
+              credentials and tokens.
             </p>
 
             <.live_component
@@ -101,10 +98,15 @@ defmodule LivebookWeb.Hub.Edit.PersonalComponent do
               id="hub-secrets-list"
               hub={@hub}
               secrets={@secrets}
-              add_path={~p"/hub/#{@hub.id}/secrets/new"}
               edit_path={"hub/#{@hub.id}/secrets/edit"}
               return_to={~p"/hub/#{@hub.id}"}
             />
+
+            <div>
+              <.button patch={~p"/hub/#{@hub.id}/secrets/new"} id="add-secret">
+                Add secret
+              </.button>
+            </div>
           </div>
 
           <div class="flex flex-col space-y-4">
@@ -143,38 +145,37 @@ defmodule LivebookWeb.Hub.Edit.PersonalComponent do
             <.form
               :let={f}
               id={"#{@id}-stamp"}
-              class="flex flex-col mt-4 space-y-4"
+              class="flex mt-4 space-x-2"
               for={@stamp_changeset}
               phx-submit="stamp_save"
               phx-change="stamp_validate"
               phx-target={@myself}
             >
-              <div class="flex space-x-2">
-                <div class="grow">
-                  <.password_field field={f[:secret_key]} label="Secret key" />
-                </div>
-                <div class="mt-6">
-                  <span class="tooltip top" data-tooltip="Generate">
-                    <button
-                      class="button-base button-outlined-gray button-square-icon"
-                      type="button"
-                      phx-click="generate_secret_key"
-                      phx-target={@myself}
-                    >
-                      <.remix_icon icon="refresh-line" class="text-xl" />
-                    </button>
-                  </span>
-                </div>
+              <div class="grow">
+                <.password_field field={f[:secret_key]} label="Secret key" />
               </div>
-              <div>
-                <button
-                  class="button-base button-blue"
+              <div class="mt-6">
+                <span class="tooltip top" data-tooltip="Generate">
+                  <.button
+                    color="gray"
+                    small
+                    type="button"
+                    phx-click="generate_secret_key"
+                    phx-target={@myself}
+                  >
+                    <.remix_icon icon="refresh-line" class="text-xl leading-none py-1" />
+                  </.button>
+                </span>
+              </div>
+
+              <div class="mt-6">
+                <.button
                   type="submit"
                   phx-disable-with="Updating..."
                   disabled={not @stamp_changeset.valid?}
                 >
                   Save
-                </button>
+                </.button>
               </div>
             </.form>
           </div>
@@ -244,7 +245,7 @@ defmodule LivebookWeb.Hub.Edit.PersonalComponent do
     case Personal.update_hub(socket.assigns.hub, params) do
       {:ok, hub} ->
         socket
-        |> put_flash(:success, "Hub updated successfully")
+        |> put_flash(:success, "Workspace updated successfully")
         |> push_navigate(to: ~p"/hub/#{hub.id}")
 
       {:error, changeset} ->

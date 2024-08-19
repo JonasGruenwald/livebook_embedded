@@ -686,6 +686,45 @@ defmodule LivebookWeb.SessionLiveTest do
       refute content =~ "In frame"
     end
 
+    test "chunked text within frame output update", %{conn: conn, session: session} do
+      Session.subscribe(session.id)
+      evaluate_setup(session.pid)
+
+      section_id = insert_section(session.pid)
+      cell_id = insert_text_cell(session.pid, section_id, :code)
+
+      Session.queue_cell_evaluation(session.pid, cell_id)
+
+      frame = %{
+        type: :frame,
+        ref: "1",
+        outputs: [terminal_text("line 1\n", true)],
+        placeholder: true
+      }
+
+      send(session.pid, {:runtime_evaluation_output, cell_id, frame})
+
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
+      assert render(view) =~ "line 1"
+
+      frame_update = %{
+        type: :frame_update,
+        ref: "1",
+        update: {:append, [terminal_text("line 2\n", true)]}
+      }
+
+      send(session.pid, {:runtime_evaluation_output, cell_id, frame_update})
+
+      wait_for_session_update(session.pid)
+
+      # Render once, so that frame send_update is processed
+      _ = render(view)
+
+      content = render(view)
+      assert content =~ "line 1"
+      assert content =~ "line 2"
+    end
+
     test "frame output update when within grid", %{conn: conn, session: session} do
       Session.subscribe(session.id)
       evaluate_setup(session.pid)
@@ -891,6 +930,32 @@ defmodule LivebookWeb.SessionLiveTest do
       assert page =~ "Reconnect"
       assert page =~ "Disconnect"
     end
+
+    test "disconnecting a connected node", %{conn: conn, session: session} do
+      {:ok, runtime} = Livebook.Runtime.NoopRuntime.new(self()) |> Livebook.Runtime.connect()
+      Session.set_runtime(session.pid, runtime)
+
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
+
+      Session.subscribe(session.id)
+
+      assert render(view) =~ "No connected nodes"
+
+      # Mimic the runtime reporting a connected node
+      node = :node@host
+      send(session.pid, {:runtime_connected_nodes, [node]})
+
+      assert_receive {:operation, {:set_runtime_connected_nodes, _pid, _nodes}}
+
+      refute render(view) =~ "No connected nodes"
+      assert render(view) =~ "#{node}"
+
+      view
+      |> element(~s{button[phx-click="runtime_disconnect_node"]})
+      |> render_click()
+
+      assert_receive {:runtime_trace, :disconnect_node, [^node]}
+    end
   end
 
   describe "persistence settings" do
@@ -902,7 +967,7 @@ defmodule LivebookWeb.SessionLiveTest do
       path = Path.join(tmp_dir, "notebook.livemd")
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: path})
 
       view
@@ -932,7 +997,7 @@ defmodule LivebookWeb.SessionLiveTest do
       path = Path.join(tmp_dir, "notebook.livemd")
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: path})
 
       view
@@ -1596,7 +1661,8 @@ defmodule LivebookWeb.SessionLiveTest do
       # to the session, allowing the user to fetches the secret.
       render_click(add_secret_button)
 
-      assert render(view) =~ "in #{hub_label(secret)}. Allow this session to access it?"
+      assert render(view) =~
+               "in the #{hub_label(secret)} workspace. Allow this notebook to access it?"
 
       grant_access_button = element(view, "#secrets-modal button", "Grant access")
       render_click(grant_access_button)
@@ -1793,7 +1859,7 @@ defmodule LivebookWeb.SessionLiveTest do
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/add-file/storage")
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: path})
 
       # Validations
@@ -1823,7 +1889,7 @@ defmodule LivebookWeb.SessionLiveTest do
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/add-file/storage")
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: path})
 
       view
@@ -2127,7 +2193,11 @@ defmodule LivebookWeb.SessionLiveTest do
       |> render_change(%{"app_settings" => %{"slug" => slug}})
 
       view
-      |> element(~s/#app-settings-modal button/, "Deploy")
+      |> element(~s/#app-settings-modal form/)
+      |> render_submit(%{"app_settings" => %{"slug" => slug}})
+
+      view
+      |> element(~s/[data-el-app-info] button/, "Launch preview")
       |> render_click()
 
       assert_receive {:app_created, %{slug: ^slug} = app}
@@ -2176,7 +2246,7 @@ defmodule LivebookWeb.SessionLiveTest do
       assert_receive {:app_updated,
                       %{slug: ^slug, sessions: [%{app_status: %{lifecycle: :deactivated}}]}}
 
-      assert render(view) =~ "/apps/#{slug}/#{app_session.id}"
+      assert render(view) =~ "/apps/#{slug}/sessions/#{app_session.id}"
 
       view
       |> element(~s/[data-el-app-info] button[aria-label="terminate app session"]/)
@@ -2184,7 +2254,7 @@ defmodule LivebookWeb.SessionLiveTest do
 
       assert_receive {:app_updated, %{slug: ^slug, sessions: []}}
 
-      refute render(view) =~ "/apps/#{slug}/#{app_session.id}"
+      refute render(view) =~ "/apps/#{slug}/sessions/#{app_session.id}"
 
       Livebook.App.close(app.pid)
     end
@@ -2196,7 +2266,7 @@ defmodule LivebookWeb.SessionLiveTest do
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
       assert render(view) =~
-               "The notebook uses session secrets, but those are not available to deployed apps. Convert them to Hub secrets instead."
+               "The notebook uses session secrets, but those are not available to deployed apps. Convert them to Workspace secrets instead."
     end
   end
 

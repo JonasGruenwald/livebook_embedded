@@ -6,7 +6,7 @@ defmodule LivebookWeb.Endpoint do
   # Set :encryption_salt if you would also like to encrypt it.
   @session_options [
     store: :cookie,
-    key: "lb:session",
+    key: "lb_session",
     signing_salt: "deadbook"
   ]
 
@@ -69,6 +69,7 @@ defmodule LivebookWeb.Endpoint do
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug LivebookWeb.ProxyPlug
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
@@ -95,7 +96,10 @@ defmodule LivebookWeb.Endpoint do
     end
   end
 
-  @plug_ssl Plug.SSL.init(host: {Livebook.Config, :force_ssl_host, []})
+  @plug_ssl Plug.SSL.init(
+              host: {Livebook.Config, :force_ssl_host, []},
+              rewrite_on: {Livebook.Config, :rewrite_on, []}
+            )
   def force_ssl(conn, _opts) do
     if Livebook.Config.force_ssl_host() do
       Plug.SSL.call(conn, @plug_ssl)
@@ -126,7 +130,7 @@ defmodule LivebookWeb.Endpoint do
 
     if cookie_size > 24576 do
       conn.cookies
-      |> Enum.reject(fn {key, _value} -> String.starts_with?(key, "lb:") end)
+      |> Enum.reject(fn {key, _value} -> String.starts_with?(key, "lb_") end)
       |> Enum.take(10)
       |> Enum.reduce(conn, fn {key, _value}, conn ->
         Plug.Conn.delete_resp_cookie(conn, key)
@@ -151,11 +155,12 @@ defmodule LivebookWeb.Endpoint do
 
     base = update_in(base.path, &(&1 || "/"))
 
-    if Livebook.Config.auth_mode() == :token do
-      token = Application.fetch_env!(:livebook, :token)
-      %{base | query: "token=" <> token}
-    else
-      base
+    case Livebook.Config.authentication() do
+      %{mode: :token, secret: token} ->
+        %{base | query: "token=" <> token}
+
+      _ ->
+        base
     end
   end
 

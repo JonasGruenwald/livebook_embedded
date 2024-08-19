@@ -1,6 +1,8 @@
 defmodule Livebook.Runtime.EvaluatorTest do
   use ExUnit.Case, async: true
 
+  import Livebook.TestHelpers
+
   alias Livebook.Runtime.Evaluator
 
   setup ctx do
@@ -15,13 +17,23 @@ defmodule Livebook.Runtime.EvaluatorTest do
       end
 
     {:ok, object_tracker} = start_supervised(Evaluator.ObjectTracker)
+    {:ok, client_tracker} = start_supervised(Evaluator.ClientTracker)
 
-    {:ok, _pid, evaluator} =
-      start_supervised(
-        {Evaluator, [send_to: self(), object_tracker: object_tracker, ebin_path: ebin_path]}
-      )
+    opts = [
+      send_to: self(),
+      object_tracker: object_tracker,
+      client_tracker: client_tracker,
+      ebin_path: ebin_path
+    ]
 
-    %{evaluator: evaluator, object_tracker: object_tracker, ebin_path: ebin_path}
+    {:ok, _pid, evaluator} = start_supervised({Evaluator, opts})
+
+    %{
+      evaluator: evaluator,
+      object_tracker: object_tracker,
+      client_tracker: client_tracker,
+      ebin_path: ebin_path
+    }
   end
 
   defmacrop metadata do
@@ -38,12 +50,6 @@ defmodule Livebook.Runtime.EvaluatorTest do
 
   defmacrop ansi_number(number), do: "\e[34m#{number}\e[0m"
   defmacrop ansi_string(string), do: "\e[32m\"#{string}\"\e[0m"
-
-  defmacrop terminal_text(text, chunk \\ false) do
-    quote do
-      %{type: :terminal_text, text: unquote(text), chunk: unquote(chunk)}
-    end
-  end
 
   defmacrop error(message) do
     quote do
@@ -223,10 +229,13 @@ defmodule Livebook.Runtime.EvaluatorTest do
                       }}
 
       assert clean_message(message) === """
-             ** (TokenMissingError) file.ex:1:2: syntax error: expression is incomplete
-                 |
-               1 | 1+
-                 |  ^\
+             ** (TokenMissingError) token missing on file.ex:1:2:
+                 error: syntax error: expression is incomplete
+                 │
+               1 │ 1+
+                 │  ^
+                 │
+                 └─ file.ex:1:2\
              """
     end
 
@@ -1189,11 +1198,9 @@ defmodule Livebook.Runtime.EvaluatorTest do
   end
 
   describe "initialize_from/3" do
-    setup %{object_tracker: object_tracker} do
-      {:ok, _pid, parent_evaluator} =
-        start_supervised({Evaluator, [send_to: self(), object_tracker: object_tracker]},
-          id: :parent_evaluator
-        )
+    setup %{object_tracker: object_tracker, client_tracker: client_tracker} do
+      opts = [send_to: self(), object_tracker: object_tracker, client_tracker: client_tracker]
+      {:ok, _pid, parent_evaluator} = start_supervised({Evaluator, opts}, id: :parent_evaluator)
 
       %{parent_evaluator: parent_evaluator}
     end
@@ -1259,6 +1266,48 @@ defmodule Livebook.Runtime.EvaluatorTest do
         Evaluator.get_evaluation_context(evaluator, [:code_3, :code_2, :code_1])
 
       assert [{:z, 1}, {:y, 1}, {:x, 1}] == binding
+    end
+
+    test "uses unambiguous camelization for erlang/elixir bindings", %{evaluator: evaluator} do
+      Evaluator.evaluate_code(evaluator, :erlang, "{JSON, JsOn, JsON} = {1, 2, 3}.", :code_1, [])
+
+      assert_receive {:runtime_evaluation_response, :code_1, terminal_text(_), metadata()}
+
+      Evaluator.evaluate_code(
+        evaluator,
+        :elixir,
+        """
+        assertion1 = {j_s_o_n, js_on, js_o_n} == {1, 2, 3}
+        {j_s_o_n, js_on, js_o_n} = {11, 12, 13}
+        """,
+        :code_2,
+        [:code_1]
+      )
+
+      assert_receive {:runtime_evaluation_response, :code_2, terminal_text(_), metadata()}
+
+      Evaluator.evaluate_code(
+        evaluator,
+        :erlang,
+        """
+        Assertion2 = {JSON, JsOn, JsON} =:= {11, 12, 13}.
+        """,
+        :code_3,
+        [:code_2]
+      )
+
+      assert_receive {:runtime_evaluation_response, :code_3, terminal_text(_), metadata()}
+
+      %{binding: binding} =
+        Evaluator.get_evaluation_context(evaluator, [:code_3, :code_2, :code_1])
+
+      assert [
+               {:assertion2, true},
+               {:js_on, 12},
+               {:js_o_n, 13},
+               {:j_s_o_n, 11},
+               {:assertion1, true}
+             ] == binding
     end
 
     test "inspects erlang results using erlang format", %{evaluator: evaluator} do
@@ -1373,19 +1422,5 @@ defmodule Livebook.Runtime.EvaluatorTest do
       {:widget_pid, widget_pid} -> widget_pid
     end
     """
-  end
-
-  defp clean_message(message) do
-    message
-    |> remove_trailing_whitespace()
-    |> remove_ansi()
-  end
-
-  defp remove_trailing_whitespace(string) do
-    String.replace(string, ~r/ +$/m, "")
-  end
-
-  defp remove_ansi(string) do
-    String.replace(string, ~r/\e\[\d+m/, "")
   end
 end

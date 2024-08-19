@@ -13,9 +13,9 @@ defmodule Livebook.HubHelpers do
     teams_key: @offline_hub_key,
     org_public_key: @offline_hub_org_public_key,
     hub_name: @offline_hub_org_name,
-    user_id: 0,
-    org_id: 0,
-    org_key_id: 0,
+    user_id: nil,
+    org_id: nil,
+    org_key_id: nil,
     session_token: "",
     offline: %Livebook.Hubs.Team.Offline{
       secrets: []
@@ -25,6 +25,14 @@ defmodule Livebook.HubHelpers do
   def create_team_hub(user, node) do
     hub = build_team_hub(user, node)
     Livebook.Hubs.save_hub(hub)
+  end
+
+  def create_agent_team_hub(node) do
+    {agent_key, org, deployment_group, hub} = build_agent_team_hub(node)
+    erpc_call(node, :create_org_key_pair, [[org: org]])
+    ^hub = Livebook.Hubs.save_hub(hub)
+
+    {agent_key, org, deployment_group, hub}
   end
 
   def build_team_headers(user, node) do
@@ -60,6 +68,40 @@ defmodule Livebook.HubHelpers do
       session_token: token,
       teams_key: teams_key
     )
+  end
+
+  def build_agent_team_hub(node) do
+    teams_org = build(:org)
+    teams_key = teams_org.teams_key
+    key_hash = Livebook.Teams.Org.key_hash(teams_org)
+
+    org = erpc_call(node, :create_org, [])
+    org_key = erpc_call(node, :create_org_key, [[org: org, key_hash: key_hash]])
+
+    deployment_group =
+      erpc_call(node, :create_deployment_group, [
+        [
+          name: "sleepy-cat-#{Ecto.UUID.generate()}",
+          mode: :online,
+          org: org
+        ]
+      ])
+
+    agent_key = erpc_call(node, :create_agent_key, [[deployment_group: deployment_group]])
+
+    team =
+      build(:team,
+        id: "team-#{org.name}",
+        hub_name: org.name,
+        user_id: nil,
+        org_id: org.id,
+        org_key_id: org_key.id,
+        org_public_key: nil,
+        session_token: agent_key.key,
+        teams_key: teams_key
+      )
+
+    {agent_key, org, deployment_group, team}
   end
 
   def build_offline_team_hub(user, node) do
@@ -119,7 +161,7 @@ defmodule Livebook.HubHelpers do
     {:ok, pid} = hub_pid(hub)
     secret_key = Livebook.Teams.derive_key(hub.teams_key)
     value = Livebook.Teams.encrypt(secret.value, secret_key)
-    secret_created = LivebookProto.SecretCreated.new(name: secret.name, value: value)
+    secret_created = %LivebookProto.SecretCreated{name: secret.name, value: value}
 
     send(pid, {:event, :secret_created, secret_created})
   end
@@ -127,7 +169,7 @@ defmodule Livebook.HubHelpers do
   def remove_offline_hub_secret(secret) do
     hub = offline_hub()
     {:ok, pid} = hub_pid(hub)
-    secret_deleted = LivebookProto.SecretDeleted.new(name: secret.name)
+    secret_deleted = %LivebookProto.SecretDeleted{name: secret.name}
 
     send(pid, {:event, :secret_deleted, secret_deleted})
   end
@@ -137,11 +179,11 @@ defmodule Livebook.HubHelpers do
     {:ok, pid} = hub_pid(hub)
 
     deployment_group_created =
-      LivebookProto.DeploymentGroupCreated.new(
+      %LivebookProto.DeploymentGroupCreated{
         id: deployment_group.id,
         name: deployment_group.name,
         mode: deployment_group.mode
-      )
+      }
 
     send(pid, {:event, :deployment_group_created, deployment_group_created})
   end
@@ -151,7 +193,7 @@ defmodule Livebook.HubHelpers do
     {:ok, pid} = hub_pid(hub)
 
     deployment_group_deleted =
-      LivebookProto.DeploymentGroupDeleted.new(id: deployment_group.id)
+      %LivebookProto.DeploymentGroupDeleted{id: deployment_group.id}
 
     send(pid, {:event, :deployment_group_deleted, deployment_group_deleted})
   end
@@ -166,12 +208,12 @@ defmodule Livebook.HubHelpers do
     value = Livebook.Teams.encrypt(json, secret_key)
 
     file_system_created =
-      LivebookProto.FileSystemCreated.new(
+      %LivebookProto.FileSystemCreated{
         id: file_system.external_id,
         name: name,
         type: Livebook.FileSystems.type(file_system),
         value: value
-      )
+      }
 
     send(pid, {:event, :file_system_created, file_system_created})
   end
@@ -179,13 +221,13 @@ defmodule Livebook.HubHelpers do
   def remove_offline_hub_file_system(file_system) do
     hub = offline_hub()
     {:ok, pid} = hub_pid(hub)
-    file_system_deleted = LivebookProto.FileSystemDeleted.new(id: file_system.external_id)
+    file_system_deleted = %LivebookProto.FileSystemDeleted{id: file_system.external_id}
 
     send(pid, {:event, :file_system_deleted, file_system_deleted})
   end
 
-  def create_teams_file_system(hub, node) do
-    org_key = erpc_call(node, :get_org_key!, [hub.org_key_id])
+  def create_teams_file_system(hub, node, org_key \\ nil) do
+    org_key = if org_key, do: org_key, else: erpc_call(node, :get_org_key!, [hub.org_key_id])
     erpc_call(node, :create_file_system, [[org_key: org_key]])
   end
 
@@ -208,6 +250,55 @@ defmodule Livebook.HubHelpers do
     :ok = Livebook.Hubs.create_file_system(hub, file_system)
   end
 
+  def erpc_call(node, fun, args) do
+    :erpc.call(node, TeamsRPC, fun, args)
+  end
+
+  def simulate_agent_join(hub, deployment_group) do
+    Livebook.Teams.Broadcasts.subscribe([:agents])
+
+    # Simulates the agent join event
+    pid = Livebook.Hubs.TeamClient.get_pid(hub.id)
+
+    agent =
+      build(:agent,
+        hub_id: hub.id,
+        org_id: to_string(hub.org_id),
+        deployment_group_id: to_string(deployment_group.id)
+      )
+
+    livebook_proto_agent =
+      %LivebookProto.Agent{
+        id: agent.id,
+        name: agent.name,
+        org_id: agent.org_id,
+        deployment_group_id: agent.deployment_group_id
+      }
+
+    livebook_proto_agent_joined = %LivebookProto.AgentJoined{agent: livebook_proto_agent}
+    send(pid, {:event, :agent_joined, livebook_proto_agent_joined})
+
+    assert_receive {:agent_joined, ^agent}
+  end
+
+  @doc """
+  Creates a new Team hub from given user and node, and await the WebSocket to be connected.
+
+      test "my test", %{user: user, node: node} do
+        team = connect_to_teams(user, node)
+        assert "team-" <> _ = team.id
+      end
+
+  """
+  @spec connect_to_teams(struct(), node()) :: Livebook.Hubs.Team.t()
+  def connect_to_teams(user, node) do
+    %{id: id} = team = create_team_hub(user, node)
+    assert_receive {:hub_connected, ^id}, 3_000
+    assert_receive {:client_connected, ^id}, 3_000
+
+    team
+  end
+
   defp hub_pid(hub) do
     if pid = GenServer.whereis({:via, Registry, {Livebook.HubsRegistry, hub.id}}) do
       {:ok, pid}
@@ -215,8 +306,4 @@ defmodule Livebook.HubHelpers do
   end
 
   defp hub_element_id(id), do: "#hubs #hub-#{id}"
-
-  defp erpc_call(node, fun, args) do
-    :erpc.call(node, TeamsRPC, fun, args)
-  end
 end

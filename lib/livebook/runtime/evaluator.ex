@@ -28,6 +28,7 @@ defmodule Livebook.Runtime.Evaluator do
           send_to: pid(),
           runtime_broadcast_to: pid(),
           object_tracker: pid(),
+          client_tracker: pid(),
           contexts: %{ref() => context()},
           initial_context: context(),
           initial_context_version: nil | (md5 :: binary()),
@@ -73,6 +74,9 @@ defmodule Livebook.Runtime.Evaluator do
     * `:send_to` - the process to send evaluation messages to. Required
 
     * `:object_tracker` - a pid of `Livebook.Runtime.Evaluator.ObjectTracker`.
+      Required
+
+    * `:client_tracker` - a pid of `Livebook.Runtime.Evaluator.ClientTracker`.
       Required
 
     * `:runtime_broadcast_to` - the process to send runtime broadcast
@@ -266,20 +270,22 @@ defmodule Livebook.Runtime.Evaluator do
     send_to = Keyword.fetch!(opts, :send_to)
     runtime_broadcast_to = Keyword.get(opts, :runtime_broadcast_to, send_to)
     object_tracker = Keyword.fetch!(opts, :object_tracker)
+    client_tracker = Keyword.fetch!(opts, :client_tracker)
     ebin_path = Keyword.get(opts, :ebin_path)
     tmp_dir = Keyword.get(opts, :tmp_dir)
     io_proxy_registry = Keyword.get(opts, :io_proxy_registry)
 
     {:ok, io_proxy} =
-      Evaluator.IOProxy.start(
-        self(),
-        send_to,
-        runtime_broadcast_to,
-        object_tracker,
-        ebin_path,
-        tmp_dir,
-        io_proxy_registry
-      )
+      Evaluator.IOProxy.start(%{
+        evaluator: self(),
+        send_to: send_to,
+        runtime_broadcast_to: runtime_broadcast_to,
+        object_tracker: object_tracker,
+        client_tracker: client_tracker,
+        ebin_path: ebin_path,
+        tmp_dir: tmp_dir,
+        registry: io_proxy_registry
+      })
 
     io_proxy_monitor = Process.monitor(io_proxy)
 
@@ -309,6 +315,7 @@ defmodule Livebook.Runtime.Evaluator do
       send_to: send_to,
       runtime_broadcast_to: runtime_broadcast_to,
       object_tracker: object_tracker,
+      client_tracker: client_tracker,
       contexts: %{},
       initial_context: context,
       initial_context_version: nil,
@@ -801,16 +808,46 @@ defmodule Livebook.Runtime.Evaluator do
   defp elixir_to_erlang_var(name) do
     name
     |> :erlang.atom_to_binary()
-    |> Macro.camelize()
+    |> toggle_var_case()
     |> :erlang.binary_to_atom()
   end
 
   defp erlang_to_elixir_var(name) do
     name
     |> :erlang.atom_to_binary()
-    |> Macro.underscore()
+    |> toggle_var_case()
     |> :erlang.binary_to_atom()
   end
+
+  # Unambiguously maps variable names from camel case to underscore
+  # case, and vice-versa. The mapping is defined as follows:
+  #
+  #   1. The first character case is changed
+  #
+  #   2. Underscore followed by lower character maps to upper character,
+  #      and vice-versa
+  #
+  defp toggle_var_case(<<h, t::binary>>) do
+    do_toggle_var_case(<<toggle_char_case(h)>>, t)
+  end
+
+  defp do_toggle_var_case(acc, <<?_, h, t::binary>>) when h in ?a..?z do
+    do_toggle_var_case(<<acc::binary, toggle_char_case(h)>>, t)
+  end
+
+  defp do_toggle_var_case(acc, <<h, t::binary>>) when h in ?A..?Z do
+    do_toggle_var_case(<<acc::binary, ?_, toggle_char_case(h)>>, t)
+  end
+
+  defp do_toggle_var_case(acc, <<h, t::binary>>) do
+    do_toggle_var_case(<<acc::binary, h>>, t)
+  end
+
+  defp do_toggle_var_case(acc, <<>>), do: acc
+
+  defp toggle_char_case(char) when char in ?a..?z, do: char - 32
+  defp toggle_char_case(char) when char in ?A..?Z, do: char + 32
+  defp toggle_char_case(char), do: char
 
   defp filter_erlang_code_markers(code_markers) do
     Enum.reject(code_markers, &(&1.line == 0))
@@ -818,6 +855,7 @@ defmodule Livebook.Runtime.Evaluator do
 
   defp extra_diagnostic?(%SyntaxError{}), do: true
   defp extra_diagnostic?(%TokenMissingError{}), do: true
+  defp extra_diagnostic?(%MismatchedDelimiterError{}), do: true
 
   defp extra_diagnostic?(%CompileError{description: description}) do
     not String.contains?(description, "(errors have been logged)")

@@ -30,11 +30,11 @@ defmodule LivebookWeb.SessionLive.ElixirStandaloneLive do
         <%= @error_message %>
       </div>
       <p class="text-gray-700">
-        Start a new local node to handle code evaluation.
+        Start a new local node to evaluate code.
       </p>
-      <button class="button-base button-blue" phx-click="init">
+      <.button phx-click="init">
         <%= if(matching_runtime?(@current_runtime), do: "Reconnect", else: "Connect") %>
-      </button>
+      </.button>
     </div>
     """
   end

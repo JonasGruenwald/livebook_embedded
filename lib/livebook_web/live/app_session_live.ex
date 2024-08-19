@@ -1,7 +1,7 @@
 defmodule LivebookWeb.AppSessionLive do
   use LivebookWeb, :live_view
 
-  import LivebookWeb.AppHelpers
+  import LivebookWeb.AppComponents
 
   alias Livebook.Session
   alias Livebook.Notebook
@@ -126,7 +126,10 @@ defmodule LivebookWeb.AppSessionLive do
               </.link>
             </.menu_item>
             <.menu_item :if={@data_view.show_source}>
-              <.link patch={~p"/apps/#{@data_view.slug}/#{@session.id}/source"} role="menuitem">
+              <.link
+                patch={~p"/apps/#{@data_view.slug}/sessions/#{@session.id}/source"}
+                role="menuitem"
+              >
                 <.remix_icon icon="code-line" />
                 <span>View source</span>
               </.link>
@@ -172,13 +175,10 @@ defmodule LivebookWeb.AppSessionLive do
                   </.link>
                 </span>
                 <button
-                  class={[
-                    "button-base bg-transparent",
-                    "border-red-400 text-red-400 hover:bg-red-50 focus:bg-red-50"
-                  ]}
+                  class="px-5 py-2 font-medium text-sm inline-flex rounded-lg border whitespace-nowrap items-center justify-center gap-1 border-red-400 text-red-400 hover:bg-red-50 focus:bg-red-50"
                   phx-click="queue_errored_cells_evaluation"
                 >
-                  <.remix_icon icon="play-circle-fill" class="align-middle mr-1" />
+                  <.remix_icon icon="play-circle-fill" />
                   <span>Retry</span>
                 </button>
               </div>
@@ -201,9 +201,9 @@ defmodule LivebookWeb.AppSessionLive do
             '''
           }
         >
-          <button phx-click="queue_full_evaluation" class="icon-button">
-            <.remix_icon icon="play-circle-fill" class="text-3xl" />
-          </button>
+          <.icon_button phx-click="queue_full_evaluation">
+            <.remix_icon icon="play-circle-fill" class="text-3xl leading-none" />
+          </.icon_button>
         </span>
         <.app_status_circle status={@data_view.app_status} />
       </div>
@@ -214,7 +214,7 @@ defmodule LivebookWeb.AppSessionLive do
       id="source-modal"
       show
       width={:big}
-      patch={~p"/apps/#{@data_view.slug}/#{@session.id}"}
+      patch={~p"/apps/#{@data_view.slug}/sessions/#{@session.id}"}
     >
       <.live_component
         module={LivebookWeb.AppSessionLive.SourceComponent}
@@ -321,6 +321,17 @@ defmodule LivebookWeb.AppSessionLive do
   end
 
   @impl true
+  def handle_call({:get_input_value, input_id}, _from, socket) do
+    reply =
+      case socket.private.data.input_infos do
+        %{^input_id => %{value: value}} -> {:ok, socket.assigns.session.id, value}
+        %{} -> :error
+      end
+
+    {:reply, reply, socket}
+  end
+
+  @impl true
   def handle_info({:operation, operation}, socket) do
     {:noreply, handle_operation(socket, operation)}
   end
@@ -404,39 +415,10 @@ defmodule LivebookWeb.AppSessionLive do
   defp update_data_view(data_view, prev_data, data, operation) do
     case operation do
       # See LivebookWeb.SessionLive for more details
-      {:add_cell_evaluation_output, _client_id, _cell_id, %{type: :frame_update} = output} ->
-        %{ref: ref, update: {update_type, _}} = output
-
-        changed_input_ids = Session.Data.changed_input_ids(data)
-
-        for {{idx, frame}, cell} <- Notebook.find_frame_outputs(data.notebook, ref) do
-          send_update(LivebookWeb.Output.FrameComponent,
-            id: "outputs-#{idx}-output",
-            outputs: frame.outputs,
-            update_type: update_type,
-            input_views: input_views_for_cell(cell, data, changed_input_ids)
-          )
-        end
-
-        data_view
-
-      {:add_cell_evaluation_output, _client_id, cell_id, %{type: type, chunk: true} = output}
-      when type in [:terminal_text, :plain_text, :markdown] ->
-        # Lookup in previous data to see if the output is already there
-        case Notebook.fetch_cell_and_section(prev_data.notebook, cell_id) do
-          {:ok, %{outputs: [{idx, %{type: ^type, chunk: true}} | _]}, _section} ->
-            module =
-              case type do
-                :terminal_text -> LivebookWeb.Output.TerminalTextComponent
-                :plain_text -> LivebookWeb.Output.PlainTextComponent
-                :markdown -> LivebookWeb.Output.MarkdownComponent
-              end
-
-            send_update(module, id: "outputs-#{idx}-output", text: output.text)
-            data_view
-
-          _ ->
-            data_to_view(data)
+      {:add_cell_evaluation_output, _client_id, cell_id, output} ->
+        case LivebookWeb.SessionLive.send_output_update(prev_data, data, cell_id, output) do
+          :ok -> data_view
+          :continue -> data_to_view(data)
         end
 
       _ ->

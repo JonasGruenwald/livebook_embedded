@@ -13,18 +13,18 @@ defmodule Livebook.LiveMarkdown.Import do
     {notebook, valid_hub?, build_messages} = build_notebook(elements)
     {notebook, postprocess_messages} = postprocess_notebook(notebook)
 
-    {notebook, metadata_messages} =
+    {notebook, stamp_verified?, metadata_messages} =
       if stamp_data != nil and valid_hub? do
         postprocess_stamp(notebook, markdown, stamp_data)
       else
-        {notebook, []}
+        {notebook, false, []}
       end
 
     messages =
       earmark_messages ++
         rewrite_messages ++ build_messages ++ postprocess_messages ++ metadata_messages
 
-    {notebook, messages}
+    {notebook, %{warnings: messages, stamp_verified?: stamp_verified?}}
   end
 
   defp earmark_message_to_string({_severity, line_number, message}) do
@@ -354,7 +354,8 @@ defmodule Livebook.LiveMarkdown.Import do
       if is_nil(hub_id) or Hubs.hub_exists?(hub_id) do
         {attrs, true, messages}
       else
-        {Map.delete(attrs, :hub_id), false, messages ++ [@unknown_hub_message]}
+        {Map.drop(attrs, [:hub_id, :deployment_group_id]), false,
+         messages ++ [@unknown_hub_message]}
       end
 
     # We identify a single leading cell as the setup cell, in any
@@ -419,6 +420,9 @@ defmodule Livebook.LiveMarkdown.Import do
 
       {"hub_id", hub_id}, {attrs, messages} ->
         {Map.put(attrs, :hub_id, hub_id), messages}
+
+      {"deployment_group_id", deployment_group_id}, {attrs, messages} ->
+        {Map.put(attrs, :deployment_group_id, deployment_group_id), messages}
 
       {"app_settings", app_settings_metadata}, {attrs, messages} ->
         app_settings =
@@ -533,9 +537,6 @@ defmodule Livebook.LiveMarkdown.Import do
 
   defp cell_metadata_to_attrs(:code, metadata) do
     Enum.reduce(metadata, %{}, fn
-      {"disable_formatting", disable_formatting}, attrs ->
-        Map.put(attrs, :disable_formatting, disable_formatting)
-
       {"reevaluate_automatically", reevaluate_automatically}, attrs ->
         Map.put(attrs, :reevaluate_automatically, reevaluate_automatically)
 
@@ -626,9 +627,10 @@ defmodule Livebook.LiveMarkdown.Import do
   defp postprocess_stamp(notebook, notebook_source, stamp_data) do
     hub = Hubs.fetch_hub!(notebook.hub_id)
 
-    {valid_stamp?, notebook, messages} =
+    {stamp_verified?, notebook, messages} =
       with %{"offset" => offset, "stamp" => stamp} <- stamp_data,
-           {:ok, notebook_source} <- safe_binary_slice(notebook_source, 0, offset),
+           {:ok, notebook_source, rest_source} <- safe_binary_split(notebook_source, offset),
+           {:ok, ^stamp_data} <- only_stamp_data(rest_source),
            {:ok, metadata} <- Livebook.Hubs.verify_notebook_stamp(hub, notebook_source, stamp) do
         notebook = apply_stamp_metadata(notebook, metadata)
         {true, notebook, []}
@@ -649,17 +651,28 @@ defmodule Livebook.LiveMarkdown.Import do
     # we can only enable team features if the stamp is valid
     # (which means the server signed with a private key and we
     # validate it against the public key).
-    teams_enabled = is_struct(hub, Livebook.Hubs.Team) and (hub.offline == nil or valid_stamp?)
+    teams_enabled = is_struct(hub, Livebook.Hubs.Team) and (hub.offline == nil or stamp_verified?)
 
-    {%{notebook | teams_enabled: teams_enabled}, messages}
+    {%{notebook | teams_enabled: teams_enabled}, stamp_verified?, messages}
   end
 
-  defp safe_binary_slice(binary, start, size)
-       when byte_size(binary) < start + size,
+  defp safe_binary_split(binary, offset)
+       when byte_size(binary) < offset,
        do: :error
 
-  defp safe_binary_slice(binary, start, size) do
-    {:ok, binary_slice(binary, start, size)}
+  defp safe_binary_split(binary, offset) do
+    size = byte_size(binary)
+    {:ok, binary_slice(binary, 0, offset), binary_slice(binary, offset, size - offset)}
+  end
+
+  defp only_stamp_data(source) do
+    {_, ast, _} = source |> String.trim() |> MarkdownHelpers.markdown_to_block_ast()
+    {ast, _} = rewrite_ast(ast)
+
+    case group_elements(ast) do
+      [{:stamp, data}] -> {:ok, data}
+      _ -> :error
+    end
   end
 
   defp apply_stamp_metadata(notebook, metadata) do
@@ -669,6 +682,9 @@ defmodule Livebook.LiveMarkdown.Import do
 
       {:quarantine_file_entry_names, quarantine_file_entry_names}, notebook ->
         %{notebook | quarantine_file_entry_names: MapSet.new(quarantine_file_entry_names)}
+
+      {:app_settings_password, password}, notebook ->
+        put_in(notebook.app_settings.password, password)
 
       _entry, notebook ->
         notebook

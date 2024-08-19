@@ -2,9 +2,10 @@ defmodule Livebook.SessionTest do
   use ExUnit.Case, async: true
 
   import Livebook.HubHelpers
+  import Livebook.AppHelpers
   import Livebook.TestHelpers
 
-  alias Livebook.{Session, Delta, Runtime, Utils, Notebook, FileSystem, Apps, App}
+  alias Livebook.{Session, Text, Runtime, Utils, Notebook, FileSystem, Apps, App}
   alias Livebook.Notebook.{Section, Cell}
   alias Livebook.Session.Data
   alias Livebook.NotebookManager
@@ -223,7 +224,8 @@ defmodule Livebook.SessionTest do
 
       Session.add_dependencies(session.pid, [%{dep: {:jason, "~> 1.3.0"}, config: []}])
 
-      assert_receive {:operation, {:apply_cell_delta, "__server__", "setup", :primary, _delta, 1}}
+      assert_receive {:operation,
+                      {:apply_cell_delta, "__server__", "setup", :primary, _delta, _selection, 0}}
 
       assert %{
                notebook: %{
@@ -338,13 +340,15 @@ defmodule Livebook.SessionTest do
 
       {_section_id, cell_id} = insert_section_and_cell(session.pid)
 
-      delta = Delta.new() |> Delta.insert("cats")
-      revision = 1
+      delta = Text.Delta.new() |> Text.Delta.insert("cats")
+      selection = Text.Selection.new([{1, 1}])
+      revision = 0
 
-      Session.apply_cell_delta(session.pid, cell_id, :primary, delta, revision)
+      Session.apply_cell_delta(session.pid, cell_id, :primary, delta, selection, revision)
 
       assert_receive {:operation,
-                      {:apply_cell_delta, _client_id, ^cell_id, :primary, ^delta, ^revision}}
+                      {:apply_cell_delta, _client_id, ^cell_id, :primary, ^delta, ^selection,
+                       ^revision}}
 
       # Sends new digest to clients
       digest = :erlang.md5("cats")
@@ -375,7 +379,7 @@ defmodule Livebook.SessionTest do
       Session.subscribe(session.id)
 
       {_section_id, cell_id} = insert_section_and_cell(session.pid)
-      attrs = %{disable_formatting: true}
+      attrs = %{reevaluate_automatically: true}
 
       Session.set_cell_attributes(session.pid, cell_id, attrs)
       assert_receive {:operation, {:set_cell_attributes, _client_id, ^cell_id, ^attrs}}
@@ -947,7 +951,7 @@ defmodule Livebook.SessionTest do
          %{source: "content!", js_view: %{}, editor: nil}}
       )
 
-      delta = Delta.new() |> Delta.retain(7) |> Delta.insert("!")
+      delta = Text.Delta.new() |> Text.Delta.retain(7) |> Text.Delta.insert("!")
       cell_id = smart_cell.id
 
       assert_receive {:operation, {:smart_cell_started, _, ^cell_id, ^delta, nil, %{}, nil}}
@@ -981,8 +985,8 @@ defmodule Livebook.SessionTest do
 
       Session.register_client(session.pid, self(), Livebook.Users.User.new())
 
-      delta = Delta.new() |> Delta.retain(7) |> Delta.insert("!")
-      Session.apply_cell_delta(session.pid, smart_cell.id, :secondary, delta, 1)
+      delta = Text.Delta.new() |> Text.Delta.retain(7) |> Text.Delta.insert("!")
+      Session.apply_cell_delta(session.pid, smart_cell.id, :secondary, delta, nil, 0)
 
       assert_receive {:editor_source, "content!"}
     end
@@ -1026,6 +1030,54 @@ defmodule Livebook.SessionTest do
                      ]
                    }
                  ]
+               }
+             } = Session.get_data(session.pid)
+    end
+
+    test "handles smart cell editor updates" do
+      smart_cell = %{Notebook.Cell.new(:smart) | kind: "text", source: ""}
+      notebook = %{Notebook.new() | sections: [%{Notebook.Section.new() | cells: [smart_cell]}]}
+      session = start_session(notebook: notebook)
+
+      runtime = connected_noop_runtime()
+      Session.set_runtime(session.pid, runtime)
+
+      send(
+        session.pid,
+        {:runtime_smart_cell_definitions,
+         [%{kind: "text", name: "Text", requirement_presets: []}]}
+      )
+
+      Session.subscribe(session.id)
+
+      editor = %{language: nil, placement: :bottom, source: "", intellisense_node: nil}
+
+      send(
+        session.pid,
+        {:runtime_smart_cell_started, smart_cell.id,
+         %{source: "1", js_view: %{pid: self(), ref: "ref"}, editor: editor}}
+      )
+
+      # Update editor source
+      send(
+        session.pid,
+        {:runtime_smart_cell_editor_update, smart_cell.id, %{source: "new source"}}
+      )
+
+      assert %{
+               notebook: %{sections: [%{cells: [%{editor: %{source: "new source"}}]}]}
+             } = Session.get_data(session.pid)
+
+      # Update intellisense node
+      send(
+        session.pid,
+        {:runtime_smart_cell_editor_update, smart_cell.id,
+         %{intellisense_node: {:test@test, :test}}}
+      )
+
+      assert %{
+               notebook: %{
+                 sections: [%{cells: [%{editor: %{intellisense_node: {:test@test, :test}}}]}]
                }
              } = Session.get_data(session.pid)
     end
@@ -1230,6 +1282,20 @@ defmodule Livebook.SessionTest do
     assert :ok = Session.fetch_assets(session.pid, hash)
   end
 
+  test "restores transient state when restarting runtimes" do
+    session = start_session()
+
+    runtime = connected_noop_runtime(self())
+    Session.set_runtime(session.pid, runtime)
+    transient_state = %{state: "anything"}
+    send(session.pid, {:runtime_transient_state, transient_state})
+
+    runtime = connected_noop_runtime(self())
+    Session.set_runtime(session.pid, runtime)
+
+    assert_receive {:runtime_trace, :restore_transient_state, [^transient_state]}
+  end
+
   describe "deploy_app/1" do
     test "deploys current notebook and keeps track of the deployed app" do
       session = start_session()
@@ -1287,9 +1353,10 @@ defmodule Livebook.SessionTest do
       notebook = %{Notebook.new() | app_settings: app_settings}
 
       Apps.subscribe()
-      {:ok, app_pid} = Apps.deploy(notebook)
+      app_pid = deploy_notebook_sync(notebook)
 
-      assert_receive {:app_created, %{pid: ^app_pid, sessions: [%{pid: session_pid}]}}
+      assert_receive {:app_created, %{pid: ^app_pid}}
+      assert_receive {:app_updated, %{pid: ^app_pid, sessions: [%{pid: session_pid}]}}
 
       ref = Process.monitor(session_pid)
 
@@ -1304,9 +1371,10 @@ defmodule Livebook.SessionTest do
       notebook = %{Notebook.new() | app_settings: app_settings}
 
       Apps.subscribe()
-      {:ok, app_pid} = Apps.deploy(notebook)
+      app_pid = deploy_notebook_sync(notebook)
 
-      assert_receive {:app_created, %{pid: ^app_pid, sessions: [%{pid: session_pid}]}}
+      assert_receive {:app_created, %{pid: ^app_pid}}
+      assert_receive {:app_updated, %{pid: ^app_pid, sessions: [%{pid: session_pid}]}}
 
       client_pid = spawn_link(fn -> receive do: (:stop -> :ok) end)
 
@@ -1342,7 +1410,7 @@ defmodule Livebook.SessionTest do
       notebook = %{Notebook.new() | sections: [section], app_settings: app_settings}
 
       Apps.subscribe()
-      {:ok, app_pid} = Apps.deploy(notebook)
+      app_pid = deploy_notebook_sync(notebook)
 
       assert_receive {:app_created, %{pid: ^app_pid} = app}
 
@@ -1372,26 +1440,26 @@ defmodule Livebook.SessionTest do
 
       # Multi-session
 
-      {:ok, app_pid} = Apps.deploy(notebook)
+      app_pid = deploy_notebook_sync(notebook)
       session_id = App.get_session_id(app_pid, user: user)
       {:ok, session} = Livebook.Sessions.fetch_session(session_id)
 
       send(session.pid, {:runtime_app_info_request, self()})
       assert_receive {:runtime_app_info_reply, app_info}
 
-      assert app_info == %{type: :multi_session}
+      assert app_info == {:ok, %{type: :multi_session}}
 
       # Single-session
 
       notebook = put_in(notebook.app_settings.multi_session, false)
-      {:ok, app_pid} = Apps.deploy(notebook)
+      app_pid = deploy_notebook_sync(notebook)
       session_id = App.get_session_id(app_pid, user: user)
       {:ok, session} = Livebook.Sessions.fetch_session(session_id)
 
       send(session.pid, {:runtime_app_info_request, self()})
       assert_receive {:runtime_app_info_reply, app_info}
 
-      assert app_info == %{type: :single_session}
+      assert app_info == {:ok, %{type: :single_session}}
 
       App.close(app_pid)
     end
@@ -1410,34 +1478,37 @@ defmodule Livebook.SessionTest do
 
       # Multi-session
 
-      {:ok, app_pid} = Apps.deploy(notebook)
+      app_pid = deploy_notebook_sync(notebook)
       session_id = App.get_session_id(app_pid, user: user)
       {:ok, session} = Livebook.Sessions.fetch_session(session_id)
 
       send(session.pid, {:runtime_app_info_request, self()})
       assert_receive {:runtime_app_info_reply, app_info}
 
-      assert app_info == %{
-               type: :multi_session,
-               started_by: %{
-                 source: :session,
-                 id: "1234",
-                 name: "Jake Peralta",
-                 email: "jperalta@example.com"
-               }
-             }
+      assert app_info ==
+               {:ok,
+                %{
+                  type: :multi_session,
+                  started_by: %{
+                    source: :session,
+                    id: "1234",
+                    name: "Jake Peralta",
+                    email: "jperalta@example.com",
+                    payload: nil
+                  }
+                }}
 
       # Single-session
 
       notebook = put_in(notebook.app_settings.multi_session, false)
-      {:ok, app_pid} = Apps.deploy(notebook)
+      app_pid = deploy_notebook_sync(notebook)
       session_id = App.get_session_id(app_pid, user: user)
       {:ok, session} = Livebook.Sessions.fetch_session(session_id)
 
       send(session.pid, {:runtime_app_info_request, self()})
       assert_receive {:runtime_app_info_reply, app_info}
 
-      assert app_info == %{type: :single_session}
+      assert app_info == {:ok, %{type: :single_session}}
 
       App.close(app_pid)
     end
@@ -1449,7 +1520,7 @@ defmodule Livebook.SessionTest do
     send(session.pid, {:runtime_app_info_request, self()})
     assert_receive {:runtime_app_info_reply, app_info}
 
-    assert app_info == %{type: :none}
+    assert app_info == {:ok, %{type: :none}}
   end
 
   describe "to_attachment_file_entry/2" do
@@ -1830,6 +1901,57 @@ defmodule Livebook.SessionTest do
     end
   end
 
+  describe "accessing client's user info" do
+    test "replies with error when the session does not use teams hub" do
+      session = start_session()
+
+      runtime = connected_noop_runtime(self())
+      Session.set_runtime(session.pid, runtime)
+      send(session.pid, {:runtime_user_info_request, self(), "c1"})
+
+      assert_receive {:runtime_user_info_reply, {:error, :not_available}}
+    end
+
+    test "replies with error when the client does not exist" do
+      notebook = %{Notebook.new() | teams_enabled: true}
+      session = start_session(notebook: notebook)
+
+      runtime = connected_noop_runtime(self())
+      Session.set_runtime(session.pid, runtime)
+      send(session.pid, {:runtime_user_info_request, self(), "c1"})
+
+      assert_receive {:runtime_user_info_reply, {:error, :not_found}}
+    end
+
+    test "replies with user info when the client exists" do
+      notebook = %{Notebook.new() | teams_enabled: true}
+      session = start_session(notebook: notebook)
+
+      user = %{
+        Livebook.Users.User.new()
+        | id: "1234",
+          name: "Jake Peralta",
+          email: "jperalta@example.com"
+      }
+
+      {_, client_id} = Session.register_client(session.pid, self(), user)
+
+      runtime = connected_noop_runtime(self())
+      Session.set_runtime(session.pid, runtime)
+      send(session.pid, {:runtime_user_info_request, self(), client_id})
+
+      assert_receive {:runtime_user_info_reply, {:ok, user_info}}
+
+      assert user_info == %{
+               source: :session,
+               id: "1234",
+               name: "Jake Peralta",
+               email: "jperalta@example.com",
+               payload: nil
+             }
+    end
+  end
+
   test "supports legacy text outputs" do
     session = start_session()
 
@@ -1878,6 +2000,7 @@ defmodule Livebook.SessionTest do
   end
 
   defmodule Global do
+    # Not async, because we alter global config (default hub)
     use ExUnit.Case, async: false
 
     describe "default hub for new notebooks" do
@@ -1915,9 +2038,13 @@ defmodule Livebook.SessionTest do
   end
 
   defp start_session(opts \\ []) do
-    opts = Keyword.merge([id: Utils.random_id()], opts)
-    pid = start_supervised!({Session, opts}, id: opts[:id])
-    Session.get_by_pid(pid)
+    {:ok, session} = Livebook.Sessions.create_session(opts)
+
+    on_exit(fn ->
+      Session.close(session.pid)
+    end)
+
+    session
   end
 
   defp insert_section_and_cell(session_pid) do

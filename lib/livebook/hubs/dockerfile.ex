@@ -8,26 +8,45 @@ defmodule Livebook.Hubs.Dockerfile do
   @type config :: %{
           deploy_all: boolean(),
           docker_tag: String.t(),
-          clustering: nil | :fly_io,
+          clustering: nil | :auto | :dns,
           zta_provider: atom() | nil,
           zta_key: String.t() | nil
         }
 
   @doc """
-  Builds a changeset for app Dockerfile configuration.
+  Builds the default Dockerfile configuration.
   """
-  @spec config_changeset(map()) :: Ecto.Changeset.t()
-  def config_changeset(attrs \\ %{}) do
+  @spec config_new() :: config()
+  def config_new() do
     default_image = Livebook.Config.docker_images() |> hd()
 
-    data = %{
+    %{
       deploy_all: false,
       docker_tag: default_image.tag,
       clustering: nil,
       zta_provider: nil,
       zta_key: nil
     }
+  end
 
+  @doc """
+  Builds Dockerfile configuration with defaults from deployment group.
+  """
+  @spec from_deployment_group(Livebook.Teams.DeploymentGroup.t()) :: config()
+  def from_deployment_group(deployment_group) do
+    %{
+      config_new()
+      | clustering: deployment_group.clustering,
+        zta_provider: deployment_group.zta_provider,
+        zta_key: deployment_group.zta_key
+    }
+  end
+
+  @doc """
+  Builds a changeset for app Dockerfile configuration.
+  """
+  @spec config_changeset(config(), map()) :: Ecto.Changeset.t()
+  def config_changeset(config, attrs \\ %{}) do
     zta_types =
       for provider <- Livebook.Config.identity_providers(),
           do: provider.type
@@ -35,19 +54,19 @@ defmodule Livebook.Hubs.Dockerfile do
     types = %{
       deploy_all: :boolean,
       docker_tag: :string,
-      clustering: Ecto.ParameterizedType.init(Ecto.Enum, values: [:fly_io]),
+      clustering: Ecto.ParameterizedType.init(Ecto.Enum, values: [:auto, :dns]),
       zta_provider: Ecto.ParameterizedType.init(Ecto.Enum, values: zta_types),
       zta_key: :string
     }
 
-    cast({data, types}, attrs, [:deploy_all, :docker_tag, :clustering, :zta_provider, :zta_key])
+    cast({config, types}, attrs, [:deploy_all, :docker_tag, :clustering, :zta_provider, :zta_key])
     |> validate_required([:deploy_all, :docker_tag])
   end
 
   @doc """
   Builds Dockerfile definition for app deployment.
   """
-  @spec build_dockerfile(
+  @spec airgapped_dockerfile(
           config(),
           Hubs.Provider.t(),
           list(Livebook.Secrets.Secret.t()),
@@ -56,7 +75,15 @@ defmodule Livebook.Hubs.Dockerfile do
           list(Livebook.Notebook.file_entry()),
           Livebook.Session.Data.secrets()
         ) :: String.t()
-  def build_dockerfile(config, hub, hub_secrets, hub_file_systems, file, file_entries, secrets) do
+  def airgapped_dockerfile(
+        config,
+        hub,
+        hub_secrets,
+        hub_file_systems,
+        file,
+        file_entries,
+        secrets
+      ) do
     base_image = Enum.find(Livebook.Config.docker_images(), &(&1.tag == config.docker_tag))
 
     image = """
@@ -115,27 +142,39 @@ defmodule Livebook.Hubs.Dockerfile do
     RUN /app/bin/warmup_apps
     """
 
-    random_secret_key_base = Livebook.Utils.random_secret_key_base()
-    random_cookie = Livebook.Utils.random_cookie()
+    secret_key =
+      case hub_type do
+        "team" -> hub.teams_key
+        "personal" -> hub.secret_key
+      end
+
+    {secret_key_base, cookie} = deterministic_skb_and_cookie(secret_key)
 
     startup =
-      if config.clustering == :fly_io do
-        """
-        # --- Clustering ---
-
-        # Set the same Livebook secrets across all nodes
-        ENV LIVEBOOK_SECRET_KEY_BASE "#{random_secret_key_base}"
-        ENV LIVEBOOK_COOKIE "#{random_cookie}"
-
-        """ <>
-          ~S"""
-          # Runtime configuration to cluster multiple Livebook nodes on Fly.io
-          RUN printf '\
-          export ERL_AFLAGS="-proto_dist inet6_tcp"\n\
-          export LIVEBOOK_NODE="${FLY_APP_NAME}-${FLY_IMAGE_REF##*-}@${FLY_PRIVATE_IP}"\n\
-          export LIVEBOOK_CLUSTER="dns:${FLY_APP_NAME}.internal"\n\
-          ' > /app/user/env.sh
+      case to_string(config.clustering) do
+        "auto" ->
           """
+          # --- Clustering ---
+
+          # Set the same Livebook secrets across all nodes
+          ENV LIVEBOOK_SECRET_KEY_BASE "#{secret_key_base}"
+          ENV LIVEBOOK_COOKIE "#{cookie}"
+          ENV LIVEBOOK_CLUSTER "auto"
+          """
+
+        "dns" ->
+          """
+          # --- Clustering ---
+
+          # Set the same Livebook secrets across all nodes
+          ENV LIVEBOOK_SECRET_KEY_BASE "#{secret_key_base}"
+          ENV LIVEBOOK_COOKIE "#{cookie}"
+          ENV LIVEBOOK_CLUSTER "dns:QUERY"
+          ENV LIVEBOOK_NODE "livebook_server@MACHINE_IP"
+          """
+
+        _ ->
+          nil
       end
 
     [
@@ -149,6 +188,18 @@ defmodule Livebook.Hubs.Dockerfile do
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
+  end
+
+  defp deterministic_skb_and_cookie(secret_key) do
+    hash = :crypto.hash(:sha256, secret_key)
+
+    <<left::48-binary, right::39-binary>> =
+      Plug.Crypto.KeyGenerator.generate(hash, "dockerfile",
+        cache: Plug.Crypto.Keys,
+        length: 48 + 39
+      )
+
+    {Base.url_encode64(left, padding: false), "c_" <> Base.url_encode64(right, padding: false)}
   end
 
   defp format_hub_config("team", config, hub, hub_file_systems, used_secrets) do
@@ -263,11 +314,63 @@ defmodule Livebook.Hubs.Dockerfile do
   end
 
   @doc """
+  Returns information for deploying Livebook Agent using Docker.
+  """
+  @spec online_docker_info(config(), Hubs.Provider.t(), Livebook.Teams.AgentKey.t()) :: %{
+          image: String.t(),
+          env: list({String.t(), String.t()})
+        }
+  def online_docker_info(config, %Hubs.Team{} = hub, agent_key) do
+    base_image = Enum.find(Livebook.Config.docker_images(), &(&1.tag == config.docker_tag))
+
+    image = "ghcr.io/livebook-dev/livebook:#{base_image.tag}"
+
+    env = [
+      {"LIVEBOOK_AGENT_NAME", "default"},
+      {"LIVEBOOK_TEAMS_KEY", "#{hub.teams_key}"},
+      {"LIVEBOOK_TEAMS_AUTH",
+       "online:#{hub.hub_name}:#{hub.org_id}:#{hub.org_key_id}:#{agent_key.key}"}
+    ]
+
+    hub_env =
+      if zta_configured?(config) do
+        [{"LIVEBOOK_IDENTITY_PROVIDER", "#{config.zta_provider}:#{config.zta_key}"}]
+      else
+        []
+      end
+
+    {secret_key_base, cookie} = deterministic_skb_and_cookie(hub.teams_key)
+
+    clustering_env =
+      case to_string(config.clustering) do
+        "auto" ->
+          [
+            {"LIVEBOOK_CLUSTER", "auto"},
+            {"LIVEBOOK_SECRET_KEY_BASE", secret_key_base},
+            {"LIVEBOOK_COOKIE", cookie}
+          ]
+
+        "dns" ->
+          [
+            {"LIVEBOOK_NODE", "livebook_server@MACHINE_IP"},
+            {"LIVEBOOK_CLUSTER", "dns:QUERY"},
+            {"LIVEBOOK_SECRET_KEY_BASE", secret_key_base},
+            {"LIVEBOOK_COOKIE", cookie}
+          ]
+
+        _ ->
+          []
+      end
+
+    %{image: image, env: base_image.env ++ env ++ hub_env ++ clustering_env}
+  end
+
+  @doc """
   Returns a list of Dockerfile-related warnings.
 
   The returned messages may include HTML.
   """
-  @spec warnings(
+  @spec airgapped_warnings(
           config(),
           Hubs.Provider.t(),
           list(Livebook.Secrets.Secret.t()),
@@ -276,14 +379,22 @@ defmodule Livebook.Hubs.Dockerfile do
           list(Livebook.Notebook.file_entry()),
           Livebook.Session.Data.secrets()
         ) :: list(String.t())
-  def warnings(config, hub, hub_secrets, hub_file_systems, app_settings, file_entries, secrets) do
+  def airgapped_warnings(
+        config,
+        hub,
+        hub_secrets,
+        hub_file_systems,
+        app_settings,
+        file_entries,
+        secrets
+      ) do
     common_warnings =
       [
         if Livebook.Session.Data.session_secrets(secrets, hub.id) != [] do
           "The notebook uses session secrets, but those are not available to deployed apps." <>
-            " Convert them to Hub secrets instead."
+            " Convert them to Workspace secrets instead."
         end
-      ]
+      ] ++ config_warnings(config)
 
     hub_warnings =
       case Hubs.Provider.type(hub) do
@@ -300,10 +411,10 @@ defmodule Livebook.Hubs.Dockerfile do
             end,
             if used_hub_file_systems != [] do
               %module{} = hd(used_hub_file_systems)
-              name = LivebookWeb.FileSystemHelpers.file_system_name(module)
+              name = LivebookWeb.FileSystemComponents.file_system_name(module)
 
-              "The #{name} file storage, defined in your personal hub, will not be available in the Docker image." <>
-                " You must either download all references as attachments or use Livebook Teams to automatically" <>
+              "The #{name} file storage, configured in your personal workspace, will not be available in the Docker image." <>
+                " You must either download all file references as file attachments or use Livebook Teams to automatically" <>
                 " encrypt and synchronize file storages across your team and deployments."
             end,
             if app_settings.access_type == :public do
@@ -326,5 +437,24 @@ defmodule Livebook.Hubs.Dockerfile do
       end
 
     Enum.reject(common_warnings ++ hub_warnings, &is_nil/1)
+  end
+
+  defp config_warnings(config) do
+    [
+      if config.clustering == nil do
+        "The deployment is not configured for clustering. Make sure to run only one instance" <>
+          " of Livebook, or configure clustering."
+      end
+    ]
+  end
+
+  @doc """
+  Returns warnings specific to agent Docker deployment.
+  """
+  @spec online_warnings(config()) :: list(String.t())
+  def online_warnings(config) do
+    warnings = config_warnings(config)
+
+    Enum.reject(warnings, &is_nil/1)
   end
 end

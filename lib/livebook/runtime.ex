@@ -31,8 +31,8 @@ defprotocol Livebook.Runtime do
   #
   #   * `{:runtime_app_info_request, reply_to}`
   #
-  # The owner replies with `{:runtime_app_info_reply, info}`, where
-  # info is a details map.
+  # The owner replies with `{:runtime_app_info_reply, reply}`, where
+  # reply is `{:ok, info}` and `info` is a details map.
 
   @typedoc """
   An arbitrary term identifying an evaluation container.
@@ -485,12 +485,13 @@ defprotocol Livebook.Runtime do
   @type doctest_report ::
           %{
             status: :running | :success,
-            line: pos_integer()
+            line: pos_integer(),
+            column: pos_integer()
           }
           | %{
               status: :failed,
-              column: pos_integer(),
               line: pos_integer(),
+              column: pos_integer(),
               end_line: pos_integer(),
               details: String.t()
             }
@@ -530,7 +531,6 @@ defprotocol Livebook.Runtime do
   @type completion_item :: %{
           label: String.t(),
           kind: completion_item_kind(),
-          detail: String.t() | nil,
           documentation: String.t() | nil,
           insert_text: String.t()
         }
@@ -562,13 +562,12 @@ defprotocol Livebook.Runtime do
 
   @type signature_response :: %{
           active_argument: non_neg_integer(),
-          signature_items: list(signature_item())
+          items: list(signature_item())
         }
 
   @type signature_item :: %{
           signature: String.t(),
-          arguments: list(String.t()),
-          documentation: String.t() | nil
+          arguments: list(String.t())
         }
 
   @typedoc """
@@ -704,7 +703,12 @@ defprotocol Livebook.Runtime do
   @typedoc """
   Smart cell editor configuration.
   """
-  @type editor :: %{language: String.t() | nil, placement: :bottom | :top, source: String.t()}
+  @type editor :: %{
+          language: String.t() | nil,
+          placement: :bottom | :top,
+          source: String.t(),
+          intellisense_node: {atom(), atom()} | nil
+        }
 
   @typedoc """
   An opaque file reference.
@@ -722,6 +726,55 @@ defprotocol Livebook.Runtime do
   obtained using `transfer_file/4`.
   """
   @type file_ref :: {:file, id :: String.t()}
+
+  @typedoc """
+  A state that can optionally be passed from one runtime to another.
+
+  To report a new transition state, the runtime may send:
+
+      {:runtime_transition_state, transition_state()}
+
+  The runtime owner can then use `restore_transient_state/2` when
+  starting another instance of this runtime.
+
+  The state should be considered complementary, it is not guaranteed
+  that any future runtime will receive it. Therefore, a transient state
+  should never point to resources with the expectation that a future
+  runtime will clean them. One valid use case is for the transient state
+  to point to some global cache, that is not managed by the runtime
+  itself.
+  """
+  @type transient_state :: %{atom() => term()}
+
+  @typedoc """
+  An identifier representing a client process.
+
+  A client is a connected user that interacts with the runtime outputs.
+  """
+  @type client_id :: String.t()
+
+  @typedoc """
+  User information about a particular client.
+  """
+  @type user_info :: %{
+          id: String.t(),
+          name: String.t() | nil,
+          email: String.t() | nil,
+          source: atom()
+        }
+
+  @type proxy_handler_spec :: {module :: module(), function :: atom(), args :: list()}
+
+  @typedoc """
+  An information about Elixir nodes that the runtime is connected to.
+
+  Whenever the node list change, the runtime should send an updated
+  list as:
+
+    * `{:runtime_connected_nodes, connected_nodes()}`
+
+  """
+  @type connected_nodes :: list(node())
 
   @doc """
   Returns relevant information about the runtime.
@@ -876,7 +929,7 @@ defprotocol Livebook.Runtime do
           pid(),
           intellisense_request(),
           parent_locators(),
-          {String.t(), String.t()} | nil
+          {atom(), atom()} | nil
         ) :: reference()
   def handle_intellisense(runtime, send_to, request, parent_locators, node)
 
@@ -945,6 +998,17 @@ defprotocol Livebook.Runtime do
   The attrs are persisted and may be used to restore the smart cell
   state later. Note that for persistence they get serialized and
   deserialized as JSON.
+
+  When the smart cell editor is enabled, the runtime owner sends the
+  new editor source whenever it changes as:
+
+    * `{:editor_source, source :: String.t()}`
+
+  The cell can also update some of the editor configuration or source
+  by sending:
+
+    * `{:runtime_smart_cell_editor_update, ref, %{optional(:source) => String.t(), optional(:intellisense_node) => {atom(), atom()} | nil}}`
+
   """
   @spec start_smart_cell(
           t(),
@@ -1030,4 +1094,46 @@ defprotocol Livebook.Runtime do
   """
   @spec delete_system_envs(t(), list(String.t())) :: :ok
   def delete_system_envs(runtime, names)
+
+  @doc """
+  Restores information from a past runtime.
+
+  See `t:transient_state/0` for details.
+  """
+  @spec restore_transient_state(t(), transient_state()) :: :ok
+  def restore_transient_state(runtime, transient_state)
+
+  @doc """
+  Notifies the runtime about connected clients.
+  """
+  @spec register_clients(t(), list(client_id())) :: :ok
+  def register_clients(runtime, clients)
+
+  @doc """
+  Notifies the runtime about clients leaving.
+  """
+  @spec unregister_clients(t(), list(client_id())) :: :ok
+  def unregister_clients(runtime, client_ids)
+
+  @doc """
+  Fetches information about a proxy request handler, if available.
+
+  When the handler is available, this function returns MFA. In order
+  to handle a connection, the caller should invoke the MFA, appending
+  `conn` to the argument list, where `conn` is a `%Plug.Conn{}` struct
+  for the specific request.
+
+  Once done, the handler MFA should return the final `conn`.
+  """
+  @spec fetch_proxy_handler_spec(t()) :: {:ok, proxy_handler_spec()} | {:error, :not_found}
+  def fetch_proxy_handler_spec(runtime)
+
+  @doc """
+  Asks the runtime to disconnect from the given connected node.
+
+  The node should be one of `connected_nodes()` reported by the runtime
+  earlier.
+  """
+  @spec disconnect_node(t(), node()) :: :ok
+  def disconnect_node(runtime, node)
 end

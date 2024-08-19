@@ -2,6 +2,7 @@ defmodule LivebookWeb.SessionLive.AddFileEntryUploadComponent do
   use LivebookWeb, :live_component
 
   import Ecto.Changeset
+  import LivebookWeb.HTMLHelpers
 
   alias Livebook.FileSystem
 
@@ -63,17 +64,13 @@ defmodule LivebookWeb.SessionLive.AddFileEntryUploadComponent do
           />
         </div>
         <div class="mt-6 flex space-x-3">
-          <button
-            class="button-base button-blue"
-            type="submit"
-            disabled={not @changeset.valid? or upload_disabled?(@uploads.file)}
-          >
-            <.spinner class="hidden phx-submit-loading:block mr-2" />
+          <.button type="submit" disabled={not @changeset.valid? or upload_disabled?(@uploads.file)}>
+            <.spinner class="hidden phx-submit-loading:block mr-1" />
             <span>Add</span>
-          </button>
-          <.link patch={~p"/sessions/#{@session.id}"} class="button-base button-outlined-gray">
+          </.button>
+          <.button color="gray" outlined patch={~p"/sessions/#{@session.id}"}>
             Cancel
-          </.link>
+          </.button>
         </div>
       </.form>
     </div>
@@ -123,7 +120,7 @@ defmodule LivebookWeb.SessionLive.AddFileEntryUploadComponent do
         file_entry = %{name: data.name, type: :attachment}
         Livebook.Session.add_file_entries(socket.assigns.session.pid, [file_entry])
         send(self(), {:file_entry_uploaded, file_entry})
-        {:noreply, push_patch(socket, to: ~p"/sessions/#{socket.assigns.session.id}")}
+        {:noreply, socket}
 
       {:error, changeset} ->
         {:noreply, assign(socket, changeset: changeset)}

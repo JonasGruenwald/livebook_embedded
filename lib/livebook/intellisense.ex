@@ -73,7 +73,7 @@ defmodule Livebook.Intellisense do
 
       %{code: formatted, code_markers: []}
     rescue
-      error ->
+      error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
         code_marker = %{line: error.line, description: error.description, severity: :error}
         %{code: nil, code_markers: [code_marker]}
     end
@@ -91,7 +91,7 @@ defmodule Livebook.Intellisense do
       {:ok, signature_infos, active_argument} ->
         %{
           active_argument: active_argument,
-          signature_items:
+          items:
             signature_infos
             |> Enum.map(&format_signature_item/1)
             |> Enum.uniq()
@@ -102,15 +102,10 @@ defmodule Livebook.Intellisense do
     end
   end
 
-  defp format_signature_item({name, signature, documentation, specs}),
+  defp format_signature_item({_name, signature, _documentation, _specs}),
     do: %{
       signature: signature,
-      arguments: arguments_from_signature(signature),
-      documentation:
-        join_with_divider([
-          format_documentation(documentation, :short),
-          format_specs(specs, name, @line_length) |> code()
-        ])
+      arguments: arguments_from_signature(signature)
     }
 
   defp arguments_from_signature(signature) do
@@ -140,8 +135,7 @@ defmodule Livebook.Intellisense do
     do: %{
       label: Atom.to_string(name),
       kind: :variable,
-      detail: "variable",
-      documentation: nil,
+      documentation: "(variable)",
       insert_text: Atom.to_string(name)
     }
 
@@ -149,8 +143,7 @@ defmodule Livebook.Intellisense do
     do: %{
       label: Atom.to_string(name),
       kind: :field,
-      detail: "field",
-      documentation: nil,
+      documentation: "(field)",
       insert_text: Atom.to_string(name)
     }
 
@@ -158,8 +151,7 @@ defmodule Livebook.Intellisense do
     do: %{
       label: Atom.to_string(name),
       kind: :field,
-      detail: "field",
-      documentation: nil,
+      documentation: "(field)",
       insert_text: "#{name}: "
     }
 
@@ -172,16 +164,16 @@ defmodule Livebook.Intellisense do
        do: %{
          label: Atom.to_string(name),
          kind: :field,
-         detail: "#{inspect(struct)} struct field",
          documentation:
            join_with_divider([
-             code(name),
              """
+             `%#{inspect(struct)}{}` struct field.
+
              **Default**
 
              ```
              #{inspect(default, pretty: true, width: @line_length)}
-             ```
+             ```\
              """
            ]),
          insert_text: "#{name}: "
@@ -209,8 +201,11 @@ defmodule Livebook.Intellisense do
     %{
       label: display_name,
       kind: kind,
-      detail: detail,
-      documentation: format_documentation(documentation, :short),
+      documentation:
+        join_with_newlines([
+          format_documentation(documentation, :short),
+          "(#{detail})"
+        ]),
       insert_text: String.trim_leading(display_name, ":")
     }
   end
@@ -223,17 +218,15 @@ defmodule Livebook.Intellisense do
          type: type,
          display_name: display_name,
          documentation: documentation,
-         signatures: signatures,
-         specs: specs
+         signatures: signatures
        }),
        do: %{
          label: "#{display_name}/#{arity}",
          kind: :function,
-         detail: format_signatures(signatures, module),
          documentation:
            join_with_newlines([
              format_documentation(documentation, :short),
-             format_specs(specs, name, @line_length) |> code()
+             code(format_signatures(signatures, module))
            ]),
          insert_text:
            cond do
@@ -254,13 +247,12 @@ defmodule Livebook.Intellisense do
 
              true ->
                # A snippet with cursor in parentheses
-               "#{display_name}($0)"
+               "#{display_name}(${})"
            end
        }
 
   defp format_completion_item(%{
          kind: :type,
-         module: module,
          name: name,
          arity: arity,
          documentation: documentation,
@@ -269,7 +261,6 @@ defmodule Livebook.Intellisense do
        do: %{
          label: "#{name}/#{arity}",
          kind: :type,
-         detail: format_type_signature(type_spec, module),
          documentation:
            join_with_newlines([
              format_documentation(documentation, :short),
@@ -278,7 +269,7 @@ defmodule Livebook.Intellisense do
          insert_text:
            cond do
              arity == 0 -> "#{Atom.to_string(name)}()"
-             true -> "#{Atom.to_string(name)}($0)"
+             true -> "#{Atom.to_string(name)}(${})"
            end
        }
 
@@ -286,8 +277,11 @@ defmodule Livebook.Intellisense do
        do: %{
          label: Atom.to_string(name),
          kind: :variable,
-         detail: "module attribute",
-         documentation: format_documentation(documentation, :short),
+         documentation:
+           join_with_newlines([
+             format_documentation(documentation, :short),
+             "(module attribute)"
+           ]),
          insert_text: Atom.to_string(name)
        }
 
@@ -296,14 +290,13 @@ defmodule Livebook.Intellisense do
       if arity == 0 do
         Atom.to_string(name)
       else
-        "#{name}($0)"
+        "#{name}(${})"
       end
 
     %{
       label: Atom.to_string(name),
-      kind: :bitstring_option,
-      detail: "bitstring option",
-      documentation: nil,
+      kind: :type,
+      documentation: "(bitstring option)",
       insert_text: insert_text
     }
   end
@@ -343,38 +336,27 @@ defmodule Livebook.Intellisense do
   defp extra_completion_items(hint) do
     items = [
       %{
-        label: "do",
-        kind: :keyword,
-        detail: "do-end block",
-        documentation: nil,
-        insert_text: "do\n  $0\nend"
-      },
-      %{
         label: "true",
         kind: :keyword,
-        detail: "boolean",
-        documentation: nil,
+        documentation: "(boolean)",
         insert_text: "true"
       },
       %{
         label: "false",
         kind: :keyword,
-        detail: "boolean",
-        documentation: nil,
+        documentation: "(boolean)",
         insert_text: "false"
       },
       %{
         label: "nil",
         kind: :keyword,
-        detail: "special atom",
-        documentation: nil,
+        documentation: "(special atom)",
         insert_text: "nil"
       },
       %{
         label: "when",
         kind: :keyword,
-        detail: "guard operator",
-        documentation: nil,
+        documentation: "(guard operator)",
         insert_text: "when"
       }
     ]
@@ -400,8 +382,12 @@ defmodule Livebook.Intellisense do
     :bitstring_option
   ]
 
-  defp completion_item_priority(%{kind: :struct, detail: "exception"} = completion_item) do
-    {length(@ordered_kinds), completion_item.label}
+  defp completion_item_priority(%{kind: :struct} = completion_item) do
+    if completion_item.documentation =~ "(exception)" do
+      {length(@ordered_kinds), completion_item.label}
+    else
+      {completion_item_kind_priority(completion_item.kind), completion_item.label}
+    end
   end
 
   defp completion_item_priority(completion_item) do
@@ -450,7 +436,7 @@ defmodule Livebook.Intellisense do
 
       ```
       #{inspect(default, pretty: true, width: @line_length)}
-      ```
+      ```\
       """
     ])
   end
@@ -543,7 +529,7 @@ defmodule Livebook.Intellisense do
       end
 
     is_otp? =
-      case :code.which(app || module) do
+      case :code.which(module) do
         :preloaded -> true
         [_ | _] = path -> List.starts_with?(path, :code.lib_dir())
         _ -> false

@@ -43,22 +43,25 @@ defmodule LivebookWeb.CoreComponents do
     ~H"""
     <div
       :if={message = Phoenix.Flash.get(@flash, @kind)}
-      class={[
-        "shadow-custom-1 max-w-2xl flex items-center space-x-3 rounded-lg px-4 py-2 border-l-4 rounded-l-none bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-500 cursor-pointer",
-        @kind == :info && "border-blue-500",
-        @kind == :success && "border-blue-500",
-        @kind == :warning && "border-yellow-300",
-        @kind == :error && "border-red-500"
-      ]}
+      class="relative group shadow-lg max-w-xl px-3 py-2 flex items-center gap-2 rounded-lg bg-gray-900 text-gray-200 text-sm"
       role="alert"
-      phx-click="lv:clear-flash"
-      phx-value-key={@kind}
       {@rest}
     >
-      <.remix_icon :if={@kind == :info} icon="information-line" class="text-2xl text-blue-500" />
-      <.remix_icon :if={@kind == :success} icon="checkbox-circle-fill" class="text-2xl text-blue-500" />
-      <.remix_icon :if={@kind == :warning} icon="alert-line" class="text-2xl text-yellow-400" />
-      <.remix_icon :if={@kind == :error} icon="close-circle-line" class="text-2xl text-red-500" />
+      <div
+        class="opacity-0 group-hover:opacity-100 absolute -left-2 -top-2 bg-gray-900 border border-gray-600 rounded-full p-0.5 flex leading-none text-gray-200 hover:text-gray-100 hover:bg-gray-700 text-sm cursor-pointer"
+        phx-click="lv:clear-flash"
+        phx-value-key={@kind}
+      >
+        <.remix_icon icon="close-line" />
+      </div>
+      <.remix_icon :if={@kind == :info} icon="information-fill" class="text-xl text-blue-500" />
+      <.remix_icon
+        :if={@kind == :success}
+        icon="checkbox-circle-fill"
+        class="text-xl text-green-bright-400"
+      />
+      <.remix_icon :if={@kind == :warning} icon="alert-fill" class="text-xl text-yellow-500" />
+      <.remix_icon :if={@kind == :error} icon="error-warning-fill" class="text-xl text-red-500" />
       <span class="whitespace-pre-wrap pr-2 max-h-52 overflow-y-auto tiny-scrollbar" phx-no-format><%= message %></span>
     </div>
     """
@@ -105,12 +108,18 @@ defmodule LivebookWeb.CoreComponents do
 
   slot :inner_block
 
+  def message_box(assigns)
+
   def message_box(assigns) do
+    if assigns.message && assigns.inner_block != [] do
+      raise ArgumentError, "expected either message or inner_block, got both."
+    end
+
     ~H"""
     <div class={[
-      "shadow text-sm flex items-center space-x-3 rounded-lg px-4 py-2 border-l-4 rounded-l-none bg-white text-gray-700",
+      "shadow text-sm rounded-lg px-4 py-2 border-l-4 rounded-l-none bg-white text-gray-700",
       @kind == :info && "border-blue-500",
-      @kind == :success && "border-blue-500",
+      @kind == :success && "border-green-bright-400",
       @kind == :warning && "border-yellow-300",
       @kind == :error && "border-red-500"
     ]}>
@@ -119,9 +128,9 @@ defmodule LivebookWeb.CoreComponents do
         class="whitespace-pre-wrap pr-2 max-h-52 overflow-y-auto tiny-scrollbar"
         phx-no-format
       ><%= @message %></div>
-      <div :if={@inner_block}>
+      <%= if @inner_block != [] do %>
         <%= render_slot(@inner_block) %>
-      </div>
+      <% end %>
     </div>
     """
   end
@@ -187,7 +196,7 @@ defmodule LivebookWeb.CoreComponents do
           id={"#{@id}-content"}
           class={[
             "relative max-h-full overflow-y-auto bg-white rounded-lg shadow-xl",
-            "w-full",
+            "w-full p-6",
             modal_width_class(@width)
           ]}
           role="dialog"
@@ -308,7 +317,7 @@ defmodule LivebookWeb.CoreComponents do
       <menu
         id={"#{@id}-content"}
         class={[
-          "absolute z-[100] rounded-lg bg-white flex flex-col py-2 shadow-[0_15px_99px_-0px_rgba(12,24,41,0.15)] hidden",
+          "absolute z-[100] hidden",
           menu_position_class(@position),
           @md_position && menu_md_position_class(@md_position),
           @sm_position && menu_sm_position_class(@sm_position),
@@ -317,21 +326,50 @@ defmodule LivebookWeb.CoreComponents do
         role="menu"
         phx-click-away={hide_menu(@id)}
       >
-        <%= render_slot(@inner_block) %>
+        <div
+          id={"#{@id}-content-inner"}
+          class="rounded-lg bg-white flex flex-col py-2 shadow-[0_15px_99px_-0px_rgba(12,24,41,0.15)]"
+        >
+          <%= render_slot(@inner_block) %>
+        </div>
       </menu>
     </div>
     """
   end
 
-  defp show_menu(id) do
-    JS.show(to: "##{id}-overlay")
-    |> JS.show(to: "##{id}-content", display: "flex")
-    |> JS.dispatch("lb:scroll_into_view", to: "##{id}-content")
+  @doc """
+  Shows a menu rendered with `menu/1`.
+
+  ## Options
+
+    * `:animate` - whether to play an animation when the menu is opened.
+      Defaults to `false`
+
+  """
+  def show_menu(js \\ %JS{}, id, opts \\ []) do
+    opts = Keyword.validate!(opts, animate: false)
+
+    js =
+      js
+      |> JS.show(to: "##{id}-overlay")
+      |> JS.show(to: "##{id}-content", display: "flex")
+      |> JS.dispatch("lb:scroll_into_view", to: "##{id}-content")
+
+    if opts[:animate] do
+      JS.add_class(js, "animate-shake", to: "##{id}-content-inner")
+    else
+      js
+    end
   end
 
-  defp hide_menu(id) do
-    JS.hide(to: "##{id}-overlay")
+  @doc """
+  Hides a menu rendered with `menu/1`.
+  """
+  def hide_menu(js \\ %JS{}, id) do
+    js
+    |> JS.hide(to: "##{id}-overlay")
     |> JS.hide(to: "##{id}-content")
+    |> JS.remove_class("animate-shake", to: "##{id}-content-inner")
   end
 
   defp menu_position_class(:top_left), do: "top-0 left-0 transform -translate-y-full -mt-1"
@@ -484,6 +522,47 @@ defmodule LivebookWeb.CoreComponents do
   end
 
   @doc """
+  Renders a highlighted code snippet with a title and a copy button.
+
+  ## Examples
+
+      <.code_preview_with_title_and_copy
+        title="
+        source_id="my-snippet"
+        language="elixir"
+        source="System.version()" />
+
+  """
+  attr :title, :string, required: true
+  attr :source_id, :string, required: true
+  attr :language, :string, required: true
+  attr :source, :string, required: true
+
+  def code_preview_with_title_and_copy(assigns) do
+    ~H"""
+    <div>
+      <div class="flex justify-between items-center">
+        <span class="text-sm text-gray-700 font-semibold"><%= @title %></span>
+        <div class="flex justify-end space-x-2">
+          <span class="tooltip left" data-tooltip="Copy source">
+            <.icon_button
+              aria-label="copy source"
+              phx-click={JS.dispatch("lb:clipcopy", to: "##{@source_id}")}
+            >
+              <.remix_icon icon="clipboard-line" />
+            </.icon_button>
+          </span>
+        </div>
+      </div>
+
+      <div class="markdown">
+        <.code_preview source_id={@source_id} language={@language} source={@source} />
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
   Renders text with a tiny label.
 
   ## Examples
@@ -507,9 +586,11 @@ defmodule LivebookWeb.CoreComponents do
       <span class="text-sm text-gray-500">
         <%= @label %>
       </span>
-      <span class={
-        "text-gray-800 text-sm font-semibold #{if @one_line, do: "whitespace-nowrap overflow-auto tiny-scrollbar"}"
-      }>
+      <span class={[
+        "text-gray-800 text-sm font-semibold",
+        @one_line &&
+          "whitespace-nowrap overflow-hidden text-ellipsis hover:text-clip hover:overflow-auto hover:tiny-scrollbar"
+      ]}>
         <%= render_slot(@inner_block) %>
       </span>
     </div>
@@ -687,24 +768,258 @@ defmodule LivebookWeb.CoreComponents do
     """
   end
 
-  # JS commands
+  @doc """
+  Renders a table with generic styling.
+
+  ## Examples
+
+      <.table id="users" rows={@users}>
+        <:col :let={user} label="id"><%= user.id %></:col>
+        <:col :let={user} label="username"><%= user.username %></:col>
+      </.table>
+
+  """
+  attr :id, :string, required: true
+  attr :rows, :list, required: true
+  attr :row_id, :any, default: nil, doc: "the function for generating the row id"
+  attr :row_click, :any, default: nil, doc: "the function for handling phx-click on each row"
+
+  attr :row_item, :any,
+    default: &Function.identity/1,
+    doc: "the function for mapping each row before calling the :col and :action slots"
+
+  slot :col, required: true do
+    attr :label, :string
+  end
+
+  slot :action, doc: "the slot for showing user actions in the last table column"
+
+  def table(assigns) do
+    assigns =
+      with %{rows: %Phoenix.LiveView.LiveStream{}} <- assigns do
+        assign(assigns, row_id: assigns.row_id || fn {id, _item} -> id end)
+      end
+
+    ~H"""
+    <table class="overflow-y-auto px-4 sm:overflow-visible sm:px-0 min-w-full divide-y divide-gray-300">
+      <thead class="text-sm text-left font-semibold leading-6 text-gray-900">
+        <tr>
+          <th :for={col <- @col} class="py-3.5 pl-4 pr-3 sm:pl-6">
+            <%= col[:label] %>
+          </th>
+          <th :if={@action != []} class="py-3.5 pl-3 pr-5 text-right sm:pr-7">
+            <span>Actions</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody
+        id={@id}
+        phx-update={match?(%Phoenix.LiveView.LiveStream{}, @rows) && "stream"}
+        class="relative divide-y divide-gray-200 bg-white text-sm font-medium leading-6 text-gray-900"
+      >
+        <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="hover:bg-gray-50">
+          <td
+            :for={col <- @col}
+            phx-click={@row_click && @row_click.(row)}
+            class={["relative p-0", @row_click && "hover:cursor-pointer"]}
+          >
+            <div class="relative block p-4 sm:px-6">
+              <%= render_slot(col, @row_item.(row)) %>
+            </div>
+          </td>
+          <td :if={@action != []} class="relative p-0">
+            <div class="relative whitespace-nowrap py-4 pl-3 pr-4 sm:pr-6 flex justify-end items-center">
+              <span :for={action <- @action} class="ml-4">
+                <%= render_slot(action, @row_item.(row)) %>
+              </span>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    """
+  end
 
   @doc """
-  Toggles classes on elements.
+  Renders a button.
+
+  ## Examples
+
+      <.button>Click</.button>
+
+      <.button color="gray" outlined>Click</.button>
+
+      <.button color="gray" small>Click</.button>
+
   """
-  def toggle_class(js \\ %JS{}, names, opts \\ []) do
-    opts = Keyword.validate!(opts, [:to])
+  attr :disabled, :boolean, default: false
+  attr :color, :string, default: "blue", values: ~w(blue gray red)
+  attr :outlined, :boolean, default: false
+  attr :small, :boolean, default: false
+  attr :class, :string, default: nil
 
-    to = Keyword.fetch!(opts, :to)
+  attr :rest, :global, include: ~w(href patch navigate download name)
 
-    names
-    |> String.split()
-    |> Enum.reduce(js, fn name, js ->
-      js
-      |> JS.remove_class(name, to: "#{to}.#{name}")
-      |> JS.add_class(name, to: "#{to}:not(.#{name})")
-    end)
+  slot :inner_block
+
+  def button(assigns)
+      when is_map_key(assigns.rest, :href) or is_map_key(assigns.rest, :patch) or
+             is_map_key(assigns.rest, :navigate) do
+    ~H"""
+    <.link class={[button_classes(@small, @disabled, @color, @outlined), @class]} {@rest}>
+      <%= render_slot(@inner_block) %>
+    </.link>
+    """
   end
+
+  def button(assigns) do
+    ~H"""
+    <button
+      class={[button_classes(@small, @disabled, @color, @outlined), @class]}
+      disabled={@disabled}
+      {@rest}
+    >
+      <%= render_slot(@inner_block) %>
+    </button>
+    """
+  end
+
+  defp button_classes(small, disabled, color, outlined) do
+    [
+      if small do
+        "px-2 py-1 font-normal text-xs"
+      else
+        "px-5 py-2 font-medium text-sm"
+      end,
+      "inline-flex rounded-lg border whitespace-nowrap items-center justify-center gap-1.5",
+      if disabled do
+        "cursor-default pointer-events-none border-transparent bg-gray-100 text-gray-400"
+      else
+        case {color, outlined} do
+          {"blue", false} ->
+            "border-transparent bg-blue-600 text-white hover:bg-blue-700 focus:bg-blue-700"
+
+          {"red", false} ->
+            "border-transparent bg-red-600 text-white hover:bg-red-700 focus:bg-red-700"
+
+          {"gray", false} ->
+            "border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-200 focus:bg-gray-200"
+
+          {"blue", true} ->
+            "bg-blue-50 border-blue-600 text-blue-600 hover:bg-blue-100 focus:bg-blue-100"
+
+          {"red", true} ->
+            "bg-red-50 border-red-600 text-red-600 hover:bg-red-100 focus:bg-red-100"
+
+          {"gray", true} ->
+            "bg-transparent border-gray-300 text-gray-600 hover:bg-gray-100 focus:bg-gray-100"
+        end
+      end
+    ]
+  end
+
+  @doc """
+  Renders an icon button.
+
+  ## Examples
+
+      <.icon_button>
+        <.remix_icon icon="refresh-line" />
+      </.icon_button>
+
+  """
+  attr :disabled, :boolean, default: false
+  attr :small, :boolean, default: false
+  attr :class, :string, default: nil
+
+  attr :rest, :global, include: ~w(href patch navigate download name)
+
+  slot :inner_block
+
+  def icon_button(assigns)
+      when is_map_key(assigns.rest, :href) or is_map_key(assigns.rest, :patch) or
+             is_map_key(assigns.rest, :navigate) do
+    ~H"""
+    <.link class={[icon_button_classes(@small, @disabled), @class]} {@rest}>
+      <%= render_slot(@inner_block) %>
+    </.link>
+    """
+  end
+
+  def icon_button(assigns) do
+    ~H"""
+    <button class={[icon_button_classes(@small, @disabled), @class]} disabled={@disabled} {@rest}>
+      <%= render_slot(@inner_block) %>
+    </button>
+    """
+  end
+
+  defp icon_button_classes(small, disabled) do
+    [
+      unless small do
+        "text-xl"
+      end,
+      "p-1 flex items-center justify-center rounded-full leading-none",
+      if disabled do
+        "cursor-default text-gray-300"
+      else
+        "text-gray-500 hover:text-gray-900 focus:bg-gray-100"
+      end
+    ]
+  end
+
+  @doc """
+  Renders stateful tabs with content.
+
+  ## Examples
+
+      <.tabs id="animals" default="cat">
+        <:tab id="cat" label="Cat">
+          This is a cat.
+        </:tab>
+        <:tab id="dog" label="Dog">
+          This is a dog.
+        </:tab>
+      </.tabs>
+
+  """
+
+  attr :id, :string, required: true
+  attr :default, :string, required: true
+
+  slot :tab do
+    attr :id, :string, required: true
+    attr :label, :string, required: true
+  end
+
+  def tabs(assigns) do
+    ~H"""
+    <div id={@id} class="flex flex-col gap-4">
+      <div class="tabs">
+        <button
+          :for={tab <- @tab}
+          class={["tab", @default == tab.id && "active"]}
+          phx-click={
+            JS.remove_class("active", to: "##{@id} .tab.active")
+            |> JS.add_class("active")
+            |> JS.add_class("hidden", to: "##{@id} [data-tab]")
+            |> JS.remove_class("hidden", to: "##{@id} [data-tab='#{tab.id}']")
+          }
+        >
+          <span class="font-medium">
+            <%= tab.label %>
+          </span>
+        </button>
+      </div>
+
+      <div :for={tab <- @tab} data-tab={tab.id} class={@default == tab.id || "hidden"}>
+        <%= render_slot(tab) %>
+      </div>
+    </div>
+    """
+  end
+
+  # JS commands
 
   @doc """
   Pushes and executes the given `%Phoenix.LiveView.JS{}` on the client.

@@ -10,7 +10,7 @@ defmodule LivebookWeb.Hub.FileSystemListComponent do
     <div id={@id} class="flex flex-col space-y-4">
       <div class="flex flex-col space-y-4">
         <.no_entries :if={@file_systems == []}>
-          No file storages in this Hub yet.
+          No file storages here... yet!
         </.no_entries>
         <div
           :for={file_system <- @file_systems}
@@ -23,9 +23,9 @@ defmodule LivebookWeb.Hub.FileSystemListComponent do
           <div class="flex items-center space-x-2">
             <.menu id={"hub-file-system-#{file_system.id}-menu"}>
               <:toggle>
-                <button class="icon-button" aria-label="open file system menu" type="button">
-                  <.remix_icon icon="more-2-fill" class="text-xl" />
-                </button>
+                <.icon_button aria-label="open file system menu" type="button">
+                  <.remix_icon icon="more-2-fill" />
+                </.icon_button>
               </:toggle>
               <.menu_item>
                 <.link
@@ -60,13 +60,9 @@ defmodule LivebookWeb.Hub.FileSystemListComponent do
         </div>
       </div>
       <div class="flex">
-        <.link
-          patch={~p"/hub/#{@hub_id}/file-systems/new"}
-          class="button-base button-blue"
-          id="add-file-system"
-        >
+        <.button patch={~p"/hub/#{@hub_id}/file-systems/new"} id="add-file-system">
           Add file storage
-        </.link>
+        </.button>
       </div>
     </div>
     """
@@ -92,7 +88,7 @@ defmodule LivebookWeb.Hub.FileSystemListComponent do
 
     {:noreply,
      confirm(socket, on_confirm,
-       title: "Detach hub file storage",
+       title: "Detach workspace file storage",
        description: "Are you sure you want to detach #{name}?",
        confirm_text: "Detach",
        confirm_icon: "delete-bin-6-line"

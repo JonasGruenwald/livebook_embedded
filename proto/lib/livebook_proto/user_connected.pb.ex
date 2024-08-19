@@ -9,4 +9,11 @@ defmodule LivebookProto.UserConnected do
     repeated: true,
     type: LivebookProto.DeploymentGroup,
     json_name: "deploymentGroups"
+
+  field :app_deployments, 5,
+    repeated: true,
+    type: LivebookProto.AppDeployment,
+    json_name: "appDeployments"
+
+  field :agents, 6, repeated: true, type: LivebookProto.Agent
 end

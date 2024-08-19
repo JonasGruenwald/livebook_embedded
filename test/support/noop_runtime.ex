@@ -66,6 +66,20 @@ defmodule Livebook.Runtime.NoopRuntime do
     def put_system_envs(_, _), do: :ok
     def delete_system_envs(_, _), do: :ok
 
+    def restore_transient_state(runtime, transient_state) do
+      trace(runtime, :restore_transient_state, [transient_state])
+      :ok
+    end
+
+    def register_clients(_, _), do: :ok
+    def unregister_clients(_, _), do: :ok
+    def fetch_proxy_handler_spec(_), do: {:error, :not_found}
+
+    def disconnect_node(runtime, node) do
+      trace(runtime, :disconnect_node, [node])
+      :ok
+    end
+
     defp trace(runtime, fun, args) do
       if runtime.trace_to do
         send(runtime.trace_to, {:runtime_trace, fun, args})

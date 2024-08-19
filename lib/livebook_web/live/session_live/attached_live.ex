@@ -60,11 +60,7 @@ defmodule LivebookWeb.SessionLive.AttachedLive do
         Make sure to give the node a name and a cookie, for example:
       </p>
       <div class="text-gray-700 markdown">
-        <%= if longname = Livebook.Config.longname() do %>
-          <pre><code>iex --name test@<%= longname %> --cookie mycookie -S mix</code></pre>
-        <% else %>
-          <pre><code>iex --sname test --cookie mycookie -S mix</code></pre>
-        <% end %>
+        <pre><code>iex --name <%= test_node() %> --cookie mycookie -S mix</code></pre>
       </div>
       <p class="text-gray-700">
         Then enter the connection information below:
@@ -78,13 +74,13 @@ defmodule LivebookWeb.SessionLive.AttachedLive do
         autocomplete="off"
         spellcheck="false"
       >
-        <div class="flex flex-col space-y-4">
-          <.text_field field={f[:name]} label="Name" placeholder={name_placeholder()} />
+        <div class="flex flex-col space-y-4 mb-5">
+          <.text_field field={f[:name]} label="Name" placeholder={test_node()} />
           <.text_field field={f[:cookie]} label="Cookie" placeholder="mycookie" />
         </div>
-        <button class="mt-5 button-base button-blue" type="submit" disabled={not @changeset.valid?}>
+        <.button type="submit" disabled={not @changeset.valid?}>
           <%= if(reconnecting?(@changeset), do: "Reconnect", else: "Connect") %>
-        </button>
+        </.button>
       </.form>
     </div>
     """
@@ -138,7 +134,7 @@ defmodule LivebookWeb.SessionLive.AttachedLive do
     changeset.valid? and changeset.data == apply_changes(changeset)
   end
 
-  defp name_placeholder do
-    if longname = Livebook.Config.longname(), do: "test@#{longname}", else: "test"
+  defp test_node() do
+    "test@#{Livebook.Utils.node_host()}"
   end
 end

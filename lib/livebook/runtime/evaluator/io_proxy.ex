@@ -24,55 +24,25 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
   For all supported requests a message is sent to the configured
   `:send_to` process, so this device serves as a proxy.
   """
-  @spec start(
-          pid(),
-          pid(),
-          pid(),
-          pid(),
-          String.t() | nil,
-          String.t() | nil,
-          atom() | nil
-        ) :: GenServer.on_start()
-  def start(
-        evaluator,
-        send_to,
-        runtime_broadcast_to,
-        object_tracker,
-        ebin_path,
-        tmp_dir,
-        registry
-      ) do
-    GenServer.start(
-      __MODULE__,
-      {evaluator, send_to, runtime_broadcast_to, object_tracker, ebin_path, tmp_dir, registry}
-    )
+  @spec start(%{
+          evaluator: pid(),
+          send_to: pid(),
+          runtime_broadcast_to: pid(),
+          object_tracker: pid(),
+          client_tracker: pid(),
+          ebin_path: String.t() | nil,
+          tmp_dir: String.t() | nil,
+          registry: atom() | nil
+        }) :: GenServer.on_start()
+  def start(args) do
+    GenServer.start(__MODULE__, args)
   end
 
   @doc """
   Linking version of `start/4`.
   """
-  @spec start_link(
-          pid(),
-          pid(),
-          pid(),
-          pid(),
-          String.t() | nil,
-          String.t() | nil,
-          atom() | nil
-        ) :: GenServer.on_start()
-  def start_link(
-        evaluator,
-        send_to,
-        runtime_broadcast_to,
-        object_tracker,
-        ebin_path,
-        tmp_dir,
-        registry
-      ) do
-    GenServer.start_link(
-      __MODULE__,
-      {evaluator, send_to, runtime_broadcast_to, object_tracker, ebin_path, tmp_dir, registry}
-    )
+  def start_link(args) do
+    GenServer.start_link(__MODULE__, args)
   end
 
   @doc """
@@ -102,9 +72,18 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
   end
 
   @impl true
-  def init(
-        {evaluator, send_to, runtime_broadcast_to, object_tracker, ebin_path, tmp_dir, registry}
-      ) do
+  def init(args) do
+    %{
+      evaluator: evaluator,
+      send_to: send_to,
+      runtime_broadcast_to: runtime_broadcast_to,
+      object_tracker: object_tracker,
+      client_tracker: client_tracker,
+      ebin_path: ebin_path,
+      tmp_dir: tmp_dir,
+      registry: registry
+    } = args
+
     evaluator_monitor = Process.monitor(evaluator)
 
     if registry do
@@ -124,6 +103,7 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
        send_to: send_to,
        runtime_broadcast_to: runtime_broadcast_to,
        object_tracker: object_tracker,
+       client_tracker: client_tracker,
        ebin_path: ebin_path,
        tmp_dir: tmp_dir,
        tracer_info: %Evaluator.Tracer{},
@@ -282,6 +262,7 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
     {:ok, state}
   end
 
+  # This request is used by Kino <= 0.13.1
   defp io_request({:livebook_get_input_value, input_id}, state) do
     input_cache =
       Map.put_new_lazy(state.input_cache, input_id, fn ->
@@ -289,6 +270,25 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
       end)
 
     {input_cache[input_id], %{state | input_cache: input_cache}}
+  end
+
+  defp io_request({:livebook_get_input_value, input_id, pid}, state) do
+    # We only allow reading the input value from the evaluator process,
+    # to make sure the cell is still evaluating. A different process
+    # could attempt to read the value after the cell evaluation was
+    # finished, in which case we could return a cached value from a
+    # different evaluation and we would not track the read properly.
+
+    if pid == state.evaluator do
+      input_cache =
+        Map.put_new_lazy(state.input_cache, input_id, fn ->
+          request_input_value(input_id, state)
+        end)
+
+      {input_cache[input_id], %{state | input_cache: input_cache}}
+    else
+      {{:error, :bad_process}, state}
+    end
   end
 
   defp io_request({:livebook_get_file_path, file_id}, state) do
@@ -392,6 +392,33 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
     {result, state}
   end
 
+  defp io_request(:livebook_get_beam_paths, state) do
+    result =
+      with ebin_path when is_binary(ebin_path) <- state.ebin_path,
+           :ok <- File.mkdir_p(ebin_path) do
+        {:ok, [state.ebin_path]}
+      else
+        _ -> {:error, :not_available}
+      end
+
+    {result, state}
+  end
+
+  defp io_request({:livebook_monitor_clients, pid}, state) do
+    client_ids = Evaluator.ClientTracker.monitor_clients(state.client_tracker, pid)
+    {{:ok, client_ids}, state}
+  end
+
+  defp io_request({:livebook_get_user_info, client_id}, state) do
+    result = request_user_info(client_id, state)
+    {result, state}
+  end
+
+  defp io_request({:livebook_get_proxy_handler_child_spec, fun}, state) do
+    result = {Livebook.Proxy.Handler, listen: fun}
+    {result, state}
+  end
+
   defp io_request(_, state) do
     {{:error, :request}, state}
   end
@@ -455,6 +482,13 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
   defp request_app_info(state) do
     request = {:runtime_app_info_request, self()}
     reply_tag = :runtime_app_info_reply
+
+    with {:ok, reply} <- runtime_request(state, request, reply_tag), do: reply
+  end
+
+  defp request_user_info(client_id, state) do
+    request = {:runtime_user_info_request, self(), client_id}
+    reply_tag = :runtime_user_info_reply
 
     with {:ok, reply} <- runtime_request(state, request, reply_tag), do: reply
   end

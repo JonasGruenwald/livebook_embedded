@@ -86,9 +86,9 @@ defmodule Livebook.Hubs do
   def delete_hub(id) do
     with {:ok, hub} <- fetch_hub(id) do
       true = Provider.type(hub) != "personal"
-      :ok = Broadcasts.hub_changed(hub.id)
       :ok = maybe_unset_default_hub(hub.id)
       :ok = Storage.delete(@namespace, id)
+      :ok = Broadcasts.hub_deleted(hub.id)
       :ok = disconnect_hub(hub)
     end
 
@@ -173,7 +173,7 @@ defmodule Livebook.Hubs do
           :ok
 
         {:error, reason} ->
-          Logger.error("Could not start Hub #{hub.id}: #{Exception.format_exit(reason)}")
+          Logger.error("Could not start Workspace #{hub.id}: #{Exception.format_exit(reason)}")
       end
     end
 
@@ -302,5 +302,15 @@ defmodule Livebook.Hubs do
   @spec delete_file_system(Provider.t(), FileSystem.t()) :: :ok | {:transport_error, String.t()}
   def delete_file_system(hub, file_system) do
     Provider.delete_file_system(hub, file_system)
+  end
+
+  @doc """
+  Gets a list of hub app specs.
+  """
+  @spec get_app_specs() :: list(Livebook.AppSpec.t())
+  def get_app_specs() do
+    for hub <- get_hubs(),
+        app_spec <- Provider.get_app_specs(hub),
+        do: app_spec
   end
 end

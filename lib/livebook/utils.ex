@@ -1,7 +1,7 @@
 defmodule Livebook.Utils do
   require Logger
 
-  @type id :: binary()
+  @type id :: String.t()
 
   @doc """
   Generates a random binary id.
@@ -82,11 +82,42 @@ defmodule Livebook.Utils do
     case Base.decode32(id, case: :lower) do
       {:ok,
        <<boot_id::binary-size(3), node_part::binary-size(16), _random_part::binary-size(11)>>} ->
-        known_nodes = [node() | Node.list()]
+        with {:ok, node} <- fetch_node_by_hash(node_part) do
+          {:ok, node, boot_id}
+        end
 
-        Enum.find_value(known_nodes, :error, fn node ->
-          node_hash(node) == node_part && {:ok, node, boot_id}
-        end)
+      _ ->
+        :error
+    end
+  end
+
+  defp fetch_node_by_hash(node_hash) do
+    known_nodes = [node() | Node.list()]
+
+    Enum.find_value(known_nodes, :error, fn node ->
+      node_hash(node) == node_hash && {:ok, node}
+    end)
+  end
+
+  @doc """
+  Returns a determinsitic short id corresponding to the current node.
+  """
+  @spec node_id() :: String.t()
+  def node_id() do
+    node_hash = node_hash(node())
+    Base.encode32(node_hash, case: :lower, padding: false)
+  end
+
+  @doc """
+  Extracts node name from the given node id, generated with `node_id/0`.
+
+  The node in question must be connected, otherwise it won't be found.
+  """
+  @spec node_from_id(id()) :: {:ok, node()} | :error
+  def node_from_id(id) do
+    case Base.decode32(id, case: :lower, padding: false) do
+      {:ok, <<node_hash::binary-size(16)>>} ->
+        fetch_node_by_hash(node_hash)
 
       _ ->
         :error
@@ -100,6 +131,18 @@ defmodule Livebook.Utils do
   def node_host do
     [_, host] = node() |> Atom.to_string() |> :binary.split("@")
     host
+  end
+
+  @doc """
+  Returns the protocol for Erlang distribution used by the current node.
+  """
+  @spec proto_dist() :: :inet_tcp | :inet6_tcp | :inet_tls
+  def proto_dist() do
+    case :init.get_argument(:proto_dist) do
+      {:ok, [[~c"inet6_tcp"]]} -> :inet6_tcp
+      {:ok, [[~c"inet_tls"]]} -> :inet_tls
+      _ -> :inet_tcp
+    end
   end
 
   @doc """
@@ -181,8 +224,10 @@ defmodule Livebook.Utils do
   """
   @spec valid_url?(String.t()) :: boolean()
   def valid_url?(url) do
-    uri = URI.parse(url)
-    uri.scheme != nil and uri.host not in [nil, ""]
+    case URI.new(url) do
+      {:ok, uri} -> uri.scheme != nil and uri.host not in [nil, ""]
+      {:error, _} -> false
+    end
   end
 
   @doc """
@@ -211,6 +256,19 @@ defmodule Livebook.Utils do
         []
       end
     end)
+  end
+
+  @doc """
+  Adds all the given errors to the changeset for the corresponding
+  fields.
+  """
+  @spec put_changeset_errors(Ecto.Changeset.t(), list({atom(), list(String.t())})) ::
+          Ecto.Changeset.t()
+  def put_changeset_errors(changeset, errors) do
+    for {field, errors} <- errors,
+        error <- errors,
+        reduce: changeset,
+        do: (changeset -> Ecto.Changeset.add_error(changeset, field, error))
   end
 
   @doc ~S"""
@@ -446,6 +504,9 @@ defmodule Livebook.Utils do
       iex> Livebook.Utils.split_at_last_occurrence("1,2,3", ",")
       {:ok, "1,2", "3"}
 
+      iex> Livebook.Utils.split_at_last_occurrence("1<>2<>3", "<>")
+      {:ok, "1<>2", "3"}
+
       iex> Livebook.Utils.split_at_last_occurrence("123", ",")
       :error
 
@@ -458,9 +519,9 @@ defmodule Livebook.Utils do
         :error
 
       parts ->
-        {start, _} = List.last(parts)
-        size = byte_size(string)
-        {:ok, binary_part(string, 0, start), binary_part(string, start + 1, size - start - 1)}
+        {start, length} = List.last(parts)
+        <<left::binary-size(start), _::binary-size(length), right::binary>> = string
+        {:ok, left, right}
     end
   end
 
@@ -633,14 +694,18 @@ defmodule Livebook.Utils do
       iex> Livebook.Utils.ip_to_host({0, 0, 0, 0})
       "localhost"
 
+      iex> Livebook.Utils.ip_to_host({0, 0, 0, 0, 0, 0, 0, 1})
+      "::1"
+
+      iex> Livebook.Utils.ip_to_host({0, 0, 0, 0, 0, 0, 0, 0})
+      "localhost"
+
   """
   @spec ip_to_host(:inet.ip_address()) :: String.t()
   def ip_to_host(ip)
 
+  def ip_to_host({0, 0, 0, 0, 0, 0, 0, 0}), do: "localhost"
   def ip_to_host({0, 0, 0, 0}), do: "localhost"
   def ip_to_host({127, 0, 0, 1}), do: "localhost"
-
-  def ip_to_host(ip) do
-    ip |> :inet.ntoa() |> List.to_string()
-  end
+  def ip_to_host(ip), do: ip |> :inet.ntoa() |> List.to_string()
 end

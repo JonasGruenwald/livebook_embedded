@@ -13,7 +13,20 @@ defmodule Livebook.TeamsServer do
 
   def setup do
     if available?() do
-      mix(%{"MIX_ENV" => "livebook"}, ["compile"])
+      :ok =
+        mix(%__MODULE__{}, [
+          "do",
+          "compile",
+          "+",
+          "ecto.drop",
+          "--quiet",
+          "+",
+          "ecto.create",
+          "--quiet",
+          "+",
+          "ecto.migrate",
+          "--quiet"
+        ])
     end
   end
 
@@ -48,8 +61,6 @@ defmodule Livebook.TeamsServer do
   @impl true
   def handle_continue(:start_app, state) do
     ensure_app_dir!()
-    prepare_database(state)
-
     {:noreply, %{state | port: start_app(state)}}
   end
 
@@ -93,7 +104,10 @@ defmodule Livebook.TeamsServer do
 
   @impl true
   def handle_info({_port, {:data, message}}, state) do
-    info(message)
+    if Livebook.Config.boolean!("TEAMS_DEBUG", false) do
+      info(message)
+    end
+
     {:noreply, state}
   end
 
@@ -150,7 +164,7 @@ defmodule Livebook.TeamsServer do
     args = [
       "-e",
       "spawn(fn -> IO.gets([]) && System.halt(0) end)",
-      "--sname",
+      "--name",
       to_string(state.node),
       "--cookie",
       to_string(Node.get_cookie()),
@@ -179,12 +193,6 @@ defmodule Livebook.TeamsServer do
     "http://localhost:#{port}"
   end
 
-  defp prepare_database(state) do
-    :ok = mix(state, ["ecto.drop", "--quiet"])
-    :ok = mix(state, ["ecto.create", "--quiet"])
-    :ok = mix(state, ["ecto.migrate", "--quiet"])
-  end
-
   defp ensure_app_dir! do
     dir = app_dir()
 
@@ -204,14 +212,6 @@ defmodule Livebook.TeamsServer do
 
   defp app_port do
     System.get_env("TEAMS_PORT", "4123")
-  end
-
-  defp debug do
-    System.get_env("TEAMS_DEBUG", "false")
-  end
-
-  defp proto do
-    System.get_env("TEAMS_LIVEBOOK_PROTO_PATH")
   end
 
   defp wait_on_start(state, port) do
@@ -253,13 +253,16 @@ defmodule Livebook.TeamsServer do
   end
 
   defp env(app_port, state_env) do
-    env = %{
-      "MIX_ENV" => "livebook",
-      "PORT" => to_string(app_port),
-      "DEBUG" => debug()
-    }
-
-    env = if proto(), do: Map.merge(env, %{"LIVEBOOK_PROTO_PATH" => proto()}), else: env
+    env =
+      Map.filter(
+        %{
+          "MIX_ENV" => "livebook",
+          "PORT" => to_string(app_port),
+          "DEBUG" => System.get_env("TEAMS_DEBUG", "false"),
+          "LIVEBOOK_PROTO_PATH" => System.get_env("TEAMS_LIVEBOOK_PROTO_PATH")
+        },
+        fn {_key, value} -> value not in ["", nil] end
+      )
 
     if state_env do
       Map.merge(env, state_env)

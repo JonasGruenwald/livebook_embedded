@@ -49,8 +49,8 @@ defmodule Livebook.Factory do
 
   def build(:secret) do
     %Livebook.Secrets.Secret{
-      name: "FOO",
-      value: "123",
+      name: unique_value("FOO_"),
+      value: Livebook.Utils.random_short_id(),
       hub_id: Livebook.Hubs.Personal.id(),
       deployment_group_id: nil
     }
@@ -58,8 +58,10 @@ defmodule Livebook.Factory do
 
   def build(:deployment_group) do
     %Livebook.Teams.DeploymentGroup{
-      name: "FOO",
-      mode: "offline"
+      name: unique_value("FOO_"),
+      mode: :offline,
+      agent_keys: [],
+      secrets: []
     }
   end
 
@@ -74,7 +76,7 @@ defmodule Livebook.Factory do
   end
 
   def build(:fs_s3) do
-    bucket_url = "https://mybucket.s3.amazonaws.com"
+    bucket_url = "https://#{unique_value("mybucket-")}.s3.amazonaws.com"
     hash = :crypto.hash(:sha256, bucket_url)
     hub_id = Livebook.Hubs.Personal.id()
 
@@ -86,6 +88,52 @@ defmodule Livebook.Factory do
       access_key_id: "key",
       secret_access_key: "secret",
       hub_id: hub_id
+    }
+  end
+
+  def build(:agent_key) do
+    %Livebook.Teams.AgentKey{
+      id: "1",
+      key: "lb_ak_zj9tWM1rEVeweYR7DbH_2VK5_aKtWfptcL07dBncqg",
+      deployment_group_id: "1"
+    }
+  end
+
+  def build(:app_deployment) do
+    slug = Livebook.Utils.random_short_id()
+    content = :crypto.strong_rand_bytes(1024 * 1024)
+    md5_hash = :crypto.hash(:md5, content)
+    shasum = Base.encode16(md5_hash, case: :lower)
+
+    deployed_at =
+      NaiveDateTime.utc_now()
+      |> NaiveDateTime.truncate(:second)
+
+    {seconds, 0} = NaiveDateTime.to_gregorian_seconds(deployed_at)
+
+    %Livebook.Teams.AppDeployment{
+      id: "1",
+      title: unique_value("MyNotebook-"),
+      sha: shasum,
+      version: "1-#{shasum}-#{seconds}",
+      slug: slug,
+      file: content,
+      multi_session: false,
+      access_type: :protected,
+      hub_id: Livebook.Hubs.Personal.id(),
+      deployment_group_id: "1",
+      deployed_by: "Ada Lovelace",
+      deployed_at: deployed_at
+    }
+  end
+
+  def build(:agent) do
+    %Livebook.Teams.Agent{
+      id: "agent_name-#{Livebook.Utils.random_short_id()}",
+      name: unique_value("agent_name"),
+      hub_id: Livebook.Hubs.Personal.id(),
+      org_id: "1",
+      deployment_group_id: "1"
     }
   end
 
@@ -105,9 +153,9 @@ defmodule Livebook.Factory do
   end
 
   def insert_deployment_group(attrs \\ %{}) do
-    deployment_group = build(:deployment_group, attrs)
-    hub = Livebook.Hubs.fetch_hub!(deployment_group.hub_id)
-    {:ok, _id} = Livebook.Teams.create_deployment_group(hub, deployment_group)
+    attrs = params_for(:deployment_group, attrs)
+    hub = Livebook.Hubs.fetch_hub!(attrs.hub_id)
+    {:ok, deployment_group} = Livebook.Teams.create_deployment_group(hub, attrs)
     deployment_group
   end
 
@@ -133,4 +181,11 @@ defmodule Livebook.Factory do
     # already running)
     Livebook.Hubs.save_hub(hub)
   end
+
+  def unique_value(prefix \\ nil) do
+    value = unique_integer()
+    if prefix, do: "#{prefix}#{value}", else: value
+  end
+
+  defp unique_integer(), do: System.unique_integer([:positive])
 end

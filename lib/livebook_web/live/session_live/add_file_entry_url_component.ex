@@ -18,7 +18,7 @@ defmodule LivebookWeb.SessionLive.AddFileEntryUrlComponent do
     |> Livebook.Utils.validate_url(:url)
     |> Livebook.Utils.validate_not_s3_url(
       :url,
-      ~s{invalid s3:// URL scheme, you must first connect to the Cloud Storage in your Hub page and then choose the relevant file in "From storage"}
+      ~s{invalid s3:// URL scheme, you must first connect to the Cloud Storage in your Workspace page and then choose the relevant file in "From storage"}
     )
   end
 
@@ -63,17 +63,13 @@ defmodule LivebookWeb.SessionLive.AddFileEntryUrlComponent do
           />
         </div>
         <div class="mt-6 flex space-x-3">
-          <button
-            class="button-base button-blue"
-            type="submit"
-            disabled={not @changeset.valid? or @fetching}
-          >
-            <.spinner :if={@fetching} class="mr-2" />
+          <.button type="submit" disabled={not @changeset.valid? or @fetching}>
+            <.spinner :if={@fetching} class="mr-1" />
             <span>Add</span>
-          </button>
-          <.link patch={~p"/sessions/#{@session.id}"} class="button-base button-outlined-gray">
+          </.button>
+          <.button color="gray" outlined patch={~p"/sessions/#{@session.id}"}>
             Cancel
-          </.link>
+          </.button>
         </div>
       </.form>
     </div>
@@ -152,8 +148,6 @@ defmodule LivebookWeb.SessionLive.AddFileEntryUrlComponent do
 
   defp add_file_entry(socket, file_entry) do
     Livebook.Session.add_file_entries(socket.assigns.session.pid, [file_entry])
-    # We can't do push_patch from update/2, so we ask the LV to do so
-    send(self(), {:push_patch, ~p"/sessions/#{socket.assigns.session.id}"})
-    socket
+    push_patch(socket, to: ~p"/sessions/#{socket.assigns.session.id}")
   end
 end

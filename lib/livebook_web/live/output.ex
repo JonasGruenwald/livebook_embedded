@@ -1,8 +1,6 @@
 defmodule LivebookWeb.Output do
   use LivebookWeb, :html
 
-  import LivebookWeb.Helpers
-
   alias LivebookWeb.Output
 
   @doc """
@@ -257,9 +255,9 @@ defmodule LivebookWeb.Output do
 
   defp render_output(
          %{type: :error, context: {:missing_secret, secret_name}} = output,
-         %{session_id: session_id}
+         %{session_id: session_id, id: id}
        ) do
-    assigns = %{message: output.message, secret_name: secret_name, session_id: session_id}
+    assigns = %{message: output.message, secret_name: secret_name, session_id: session_id, id: id}
 
     ~H"""
     <div class="-m-4 space-x-4 py-4">
@@ -271,23 +269,25 @@ defmodule LivebookWeb.Output do
           <.remix_icon icon="close-circle-line" />
           <span>Missing secret <%= inspect(@secret_name) %></span>
         </div>
-        <.link
-          patch={~p"/sessions/#{@session_id}/secrets?secret_name=#{@secret_name}"}
-          class="button-base button-gray"
-        >
+        <.button color="gray" patch={~p"/sessions/#{@session_id}/secrets?secret_name=#{@secret_name}"}>
           Add secret
-        </.link>
+        </.button>
       </div>
-      <%= render_formatted_error_message(@message) %>
+      <%= render_formatted_error_message(@id, @message) %>
     </div>
     """
   end
 
   defp render_output(
          %{type: :error, context: {:file_entry_forbidden, file_entry_name}} = output,
-         %{session_id: session_id}
+         %{session_id: session_id, id: id}
        ) do
-    assigns = %{message: output.message, file_entry_name: file_entry_name, session_id: session_id}
+    assigns = %{
+      message: output.message,
+      file_entry_name: file_entry_name,
+      session_id: session_id,
+      id: id
+    }
 
     ~H"""
     <div class="-m-4 space-x-4 py-4">
@@ -299,14 +299,14 @@ defmodule LivebookWeb.Output do
           <.remix_icon icon="close-circle-line" />
           <span>Forbidden access to file <%= inspect(@file_entry_name) %></span>
         </div>
-        <button
-          class="button-base button-gray"
+        <.button
+          color="gray"
           phx-click={JS.push("review_file_entry_access", value: %{name: @file_entry_name})}
         >
           Review access
-        </button>
+        </.button>
       </div>
-      <%= render_formatted_error_message(@message) %>
+      <%= render_formatted_error_message(@id, @message) %>
     </div>
     """
   end
@@ -330,7 +330,7 @@ defmodule LivebookWeb.Output do
       </div>
       <button
         class={[
-          "button-base bg-transparent",
+          "px-5 py-2 font-medium text-sm inline-flex rounded-lg border whitespace-nowrap items-center justify-center gap-1",
           case @variant do
             :error -> "border-red-400 text-red-400 hover:bg-red-50 focus:bg-red-50"
             :normal -> "border-gray-300 text-gray-500 hover:bg-gray-100 focus:bg-gray-100"
@@ -339,15 +339,15 @@ defmodule LivebookWeb.Output do
         phx-click="queue_interrupted_cell_evaluation"
         phx-value-cell_id={@cell_id}
       >
-        <.remix_icon icon="play-circle-fill" class="align-middle mr-1" />
+        <.remix_icon icon="play-circle-fill" />
         <span>Continue</span>
       </button>
     </div>
     """
   end
 
-  defp render_output(%{type: :error, message: message}, %{}) do
-    render_formatted_error_message(message)
+  defp render_output(%{type: :error, message: message}, %{id: id}) do
+    render_formatted_error_message(id, message)
   end
 
   defp render_output(output, %{}) do
@@ -373,16 +373,24 @@ defmodule LivebookWeb.Output do
     """
   end
 
-  defp render_formatted_error_message(formatted) do
-    assigns = %{message: formatted}
+  defp render_formatted_error_message(id, message) do
+    assigns = %{id: id, message: message}
 
     ~H"""
-    <div
-      class="whitespace-pre-wrap break-words font-editor text-gray-500"
-      role="complementary"
-      aria-label="error"
-      phx-no-format
-    ><%= ansi_string_to_html(@message) %></div>
+    <div id={@id} class="relative group/error">
+      <div
+        id={"#{@id}-message"}
+        class="whitespace-pre-wrap break-words font-editor text-gray-500"
+        role="complementary"
+        aria-label="error"
+        phx-no-format
+      ><%= LivebookWeb.ANSIHelpers.ansi_string_to_html(@message) %></div>
+      <div class="absolute right-2 top-0 z-10 invisible group-hover/error:visible">
+        <.icon_button phx-click={JS.dispatch("lb:clipcopy", to: "##{@id}-message")}>
+          <.remix_icon icon="clipboard-line" />
+        </.icon_button>
+      </div>
+    </div>
     """
   end
 end

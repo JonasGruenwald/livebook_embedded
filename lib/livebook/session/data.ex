@@ -27,6 +27,8 @@ defmodule Livebook.Session.Data do
     :input_infos,
     :bin_entries,
     :runtime,
+    :runtime_transient_state,
+    :runtime_connected_nodes,
     :smart_cell_definitions,
     :clients_map,
     :users_map,
@@ -37,7 +39,7 @@ defmodule Livebook.Session.Data do
     :app_data
   ]
 
-  alias Livebook.{Notebook, Delta, Runtime, JSInterop, FileSystem, Hubs}
+  alias Livebook.{Notebook, Text, Runtime, FileSystem, Hubs}
   alias Livebook.Users.User
   alias Livebook.Notebook.{Cell, Section, AppSettings}
   alias Livebook.Utils.Graph
@@ -53,6 +55,8 @@ defmodule Livebook.Session.Data do
           input_infos: %{input_id() => input_info()},
           bin_entries: list(cell_bin_entry()),
           runtime: Runtime.t(),
+          runtime_transient_state: Runtime.transient_state(),
+          runtime_connected_nodes: list(node()),
           smart_cell_definitions: list(Runtime.smart_cell_definition()),
           clients_map: %{client_id() => User.id()},
           users_map: %{User.id() => User.t()},
@@ -89,7 +93,7 @@ defmodule Livebook.Session.Data do
 
   @type cell_source_info :: %{
           revision: cell_revision(),
-          deltas: list(Delta.t()),
+          deltas: list(Text.Delta.t()),
           revision_by_client_id: %{client_id() => cell_revision()},
           digest: String.t() | nil
         }
@@ -192,9 +196,9 @@ defmodule Livebook.Session.Data do
           | {:reflect_main_evaluation_failure, client_id()}
           | {:reflect_evaluation_failure, client_id(), Section.id()}
           | {:cancel_cell_evaluation, client_id(), Cell.id()}
-          | {:smart_cell_started, client_id(), Cell.id(), Delta.t(), Runtime.chunks() | nil,
+          | {:smart_cell_started, client_id(), Cell.id(), Text.Delta.t(), Runtime.chunks() | nil,
              Runtime.js_view(), Runtime.editor() | nil}
-          | {:update_smart_cell, client_id(), Cell.id(), Cell.Smart.attrs(), Delta.t(),
+          | {:update_smart_cell, client_id(), Cell.id(), Cell.Smart.attrs(), Text.Delta.t(),
              Runtime.chunks() | nil}
           | {:queue_smart_cell_reevaluation, client_id(), Cell.id()}
           | {:smart_cell_down, client_id(), Cell.id()}
@@ -205,12 +209,14 @@ defmodule Livebook.Session.Data do
           | {:client_join, client_id(), User.t()}
           | {:client_leave, client_id()}
           | {:update_user, client_id(), User.t()}
-          | {:apply_cell_delta, client_id(), Cell.id(), cell_source_tag(), Delta.t(),
-             cell_revision()}
+          | {:apply_cell_delta, client_id(), Cell.id(), cell_source_tag(), Text.Delta.t(),
+             Text.Selection.t() | nil, cell_revision()}
           | {:report_cell_revision, client_id(), Cell.id(), cell_source_tag(), cell_revision()}
           | {:set_cell_attributes, client_id(), Cell.id(), map()}
           | {:set_input_value, client_id(), input_id(), value :: term()}
           | {:set_runtime, client_id(), Runtime.t()}
+          | {:set_runtime_transient_state, client_id(), Runtime.transient_state()}
+          | {:set_runtime_connected_nodes, client_id(), list(node())}
           | {:set_smart_cell_definitions, client_id(), list(Runtime.smart_cell_definition())}
           | {:set_file, client_id(), FileSystem.File.t() | nil}
           | {:set_autosave_interval, client_id(), non_neg_integer() | nil}
@@ -227,6 +233,7 @@ defmodule Livebook.Session.Data do
           | {:set_deployed_app_slug, client_id(), String.t()}
           | {:app_deactivate, client_id()}
           | {:app_shutdown, client_id()}
+          | {:set_notebook_deployment_group, client_id(), String.t()}
 
   @type action ::
           :connect_runtime
@@ -236,7 +243,7 @@ defmodule Livebook.Session.Data do
           | {:start_smart_cell, Cell.t(), Section.t()}
           | {:set_smart_cell_parents, Cell.t(), Section.t(),
              parent :: {Cell.t(), Section.t()} | nil}
-          | {:report_delta, client_id(), Cell.t(), cell_source_tag(), Delta.t()}
+          | {:report_delta, client_id(), Cell.t(), cell_source_tag(), Text.Delta.t()}
           | {:clean_up_input_values, %{input_id() => input_info()}}
           | :app_report_status
           | :app_recover
@@ -298,6 +305,8 @@ defmodule Livebook.Session.Data do
       input_infos: initial_input_infos(notebook),
       bin_entries: [],
       runtime: default_runtime,
+      runtime_transient_state: %{},
+      runtime_connected_nodes: [],
       smart_cell_definitions: [],
       clients_map: %{},
       users_map: %{},
@@ -790,20 +799,21 @@ defmodule Livebook.Session.Data do
     end
   end
 
-  def apply_operation(data, {:apply_cell_delta, client_id, cell_id, tag, delta, revision}) do
+  def apply_operation(
+        data,
+        {:apply_cell_delta, client_id, cell_id, tag, delta, selection, revision}
+      ) do
     with {:ok, cell, _} <- Notebook.fetch_cell_and_section(data.notebook, cell_id),
          source_info <- data.cell_infos[cell_id].sources[tag],
-         true <- 0 < revision and revision <= source_info.revision + 1,
+         true <- 0 <= revision and revision <= source_info.revision,
          # We either need to know the client, so that we can transform
          # the delta, or the delta must apply to the latest revision,
          # in which case no transformation is necessary. The latter is
-         # useful when we want to apply changes programatically
-         true <-
-           Map.has_key?(data.clients_map, client_id) or
-             revision == source_info.revision + 1 do
+         # useful when we want to apply changes programmatically
+         true <- Map.has_key?(data.clients_map, client_id) or revision == source_info.revision do
       data
       |> with_actions()
-      |> apply_delta(client_id, cell, tag, delta, revision)
+      |> apply_delta(client_id, cell, tag, delta, selection, revision)
       |> set_dirty()
       |> wrap_ok()
     else
@@ -814,7 +824,7 @@ defmodule Livebook.Session.Data do
   def apply_operation(data, {:report_cell_revision, client_id, cell_id, tag, revision}) do
     with {:ok, cell, _} <- Notebook.fetch_cell_and_section(data.notebook, cell_id),
          source_info <- data.cell_infos[cell_id].sources[tag],
-         true <- 0 < revision and revision <= source_info.revision,
+         true <- 0 <= revision and revision <= source_info.revision,
          true <- Map.has_key?(data.clients_map, client_id) do
       data
       |> with_actions()
@@ -855,6 +865,20 @@ defmodule Livebook.Session.Data do
     data
     |> with_actions()
     |> set_runtime(data, runtime)
+    |> wrap_ok()
+  end
+
+  def apply_operation(data, {:set_runtime_transient_state, _client_id, transient_state}) do
+    data
+    |> with_actions()
+    |> set!(runtime_transient_state: transient_state)
+    |> wrap_ok()
+  end
+
+  def apply_operation(data, {:set_runtime_connected_nodes, _client_id, nodes}) do
+    data
+    |> with_actions()
+    |> set_runtime_connected_nodes(nodes)
     |> wrap_ok()
   end
 
@@ -905,9 +929,18 @@ defmodule Livebook.Session.Data do
       |> with_actions()
       |> set_notebook_hub(hub)
       |> update_notebook_hub_secret_names()
+      |> set_notebook_deployment_group(nil)
       |> set_dirty()
       |> wrap_ok()
     end
+  end
+
+  def apply_operation(data, {:set_notebook_deployment_group, _client_id, id}) do
+    data
+    |> with_actions()
+    |> set_notebook_deployment_group(id)
+    |> set_dirty()
+    |> wrap_ok()
   end
 
   def apply_operation(data, {:sync_hub_secrets, _client_id}) do
@@ -1648,7 +1681,7 @@ defmodule Livebook.Session.Data do
       info = put_in(info.sources.primary, source_info)
       put_in(info.sources.secondary, new_source_info(editor && editor.source, data.clients_map))
     end)
-    |> add_action({:report_delta, client_id, updated_cell, :primary, delta})
+    |> add_action({:report_delta, client_id, updated_cell, :primary, delta, nil})
   end
 
   defp update_smart_cell({data, _} = data_actions, cell, client_id, attrs, delta, chunks) do
@@ -1667,7 +1700,7 @@ defmodule Livebook.Session.Data do
     |> update_cell_info!(cell.id, fn info ->
       put_in(info.sources.primary, source_info)
     end)
-    |> add_action({:report_delta, client_id, updated_cell, :primary, delta})
+    |> add_action({:report_delta, client_id, updated_cell, :primary, delta, nil})
   end
 
   defp smart_cell_down(data_actions, cell) do
@@ -1712,6 +1745,10 @@ defmodule Livebook.Session.Data do
       },
       hub_secrets: Hubs.get_secrets(hub)
     )
+  end
+
+  defp set_notebook_deployment_group({data, _} = data_actions, id) do
+    set!(data_actions, notebook: %{data.notebook | deployment_group_id: id})
   end
 
   defp sync_hub_secrets({data, _} = data_actions) do
@@ -1841,19 +1878,27 @@ defmodule Livebook.Session.Data do
     set!(data_actions, users_map: Map.put(data.users_map, user.id, user))
   end
 
-  defp apply_delta({data, _} = data_actions, client_id, cell, tag, delta, revision) do
+  defp apply_delta({data, _} = data_actions, client_id, cell, tag, delta, selection, revision) do
     source_info = data.cell_infos[cell.id].sources[tag]
 
-    deltas_ahead = Enum.take(source_info.deltas, -(source_info.revision - revision + 1))
+    deltas_ahead = Enum.take(source_info.deltas, -(source_info.revision - revision))
 
-    transformed_new_delta =
-      Enum.reduce(deltas_ahead, delta, fn delta_ahead, transformed_new_delta ->
-        Delta.transform(delta_ahead, transformed_new_delta, :left)
+    # Transform the incoming delta and selection against the already
+    # acknowledged deltas
+    {delta, selection} =
+      Enum.reduce(deltas_ahead, {delta, selection}, fn delta_ahead, {delta, selection} ->
+        {delta, delta_ahead} =
+          {Text.Delta.transform(delta_ahead, delta, :left),
+           Text.Delta.transform(delta, delta_ahead, :right)}
+
+        selection = selection && Text.Selection.transform(selection, delta_ahead)
+
+        {delta, selection}
       end)
 
     source_info =
       source_info
-      |> Map.update!(:deltas, &(&1 ++ [transformed_new_delta]))
+      |> Map.update!(:deltas, &(&1 ++ [delta]))
       |> Map.update!(:revision, &(&1 + 1))
 
     source_info =
@@ -1868,12 +1913,12 @@ defmodule Livebook.Session.Data do
       end
 
     {updated_cell, source_info} =
-      apply_delta_to_cell(cell, source_info, tag, transformed_new_delta)
+      apply_delta_to_cell(cell, source_info, tag, delta)
 
     data_actions
     |> set!(notebook: Notebook.update_cell(data.notebook, cell.id, fn _ -> updated_cell end))
     |> update_cell_info!(cell.id, &put_in(&1.sources[tag], source_info))
-    |> add_action({:report_delta, client_id, updated_cell, tag, transformed_new_delta})
+    |> add_action({:report_delta, client_id, updated_cell, tag, delta, selection})
   end
 
   # Note: the clients drop cell's source once it's no longer needed
@@ -1885,7 +1930,7 @@ defmodule Livebook.Session.Data do
     cell =
       update_in(cell, source_access(cell, tag), fn
         :__pruned__ -> :__pruned__
-        source -> JSInterop.apply_delta_to_string(delta, source)
+        source -> Text.Delta.apply(delta, source)
       end)
 
     source_info =
@@ -1921,7 +1966,13 @@ defmodule Livebook.Session.Data do
   end
 
   defp set_runtime(data_actions, prev_data, runtime) do
-    {data, _} = data_actions = set!(data_actions, runtime: runtime, smart_cell_definitions: [])
+    {data, _} =
+      data_actions =
+      set!(data_actions,
+        runtime: runtime,
+        runtime_connected_nodes: [],
+        smart_cell_definitions: []
+      )
 
     if not Runtime.connected?(prev_data.runtime) and Runtime.connected?(data.runtime) do
       data_actions
@@ -1930,6 +1981,7 @@ defmodule Livebook.Session.Data do
       data_actions
       |> clear_all_evaluation()
       |> clear_smart_cells()
+      |> app_update_execution_status()
     end
   end
 
@@ -1970,6 +2022,12 @@ defmodule Livebook.Session.Data do
     else
       data_actions
     end
+  end
+
+  defp set_runtime_connected_nodes(data_actions, nodes) do
+    data_actions
+    |> set!(runtime_connected_nodes: nodes)
+    |> maybe_start_smart_cells()
   end
 
   defp set_smart_cell_definitions(data_actions, smart_cell_definitions) do
@@ -2242,6 +2300,27 @@ defmodule Livebook.Session.Data do
   end
 
   @doc """
+  Transforms the given selection against deltas ahead of the given
+  revision, if any.
+  """
+  @spec transform_selection(
+          t(),
+          Cell.id(),
+          cell_source_tag(),
+          TextSelection.t(),
+          cell_revision()
+        ) :: Text.Selection.t()
+  def transform_selection(data, cell_id, tag, selection, revision) do
+    source_info = data.cell_infos[cell_id].sources[tag]
+
+    deltas_ahead = Enum.take(source_info.deltas, -(source_info.revision - revision))
+
+    Enum.reduce(deltas_ahead, selection, fn delta_ahead, selection ->
+      Text.Selection.transform(selection, delta_ahead)
+    end)
+  end
+
+  @doc """
   Builds evaluation parent sequence for every evaluable cell.
 
   This function should be used instead of calling `cell_evaluation_parents/2`
@@ -2460,9 +2539,6 @@ defmodule Livebook.Session.Data do
       end)
     end)
   end
-
-  defp update_reevaluates_automatically({data, _} = data_actions) when data.mode == :app,
-    do: data_actions
 
   defp update_reevaluates_automatically({data, _} = data_actions) do
     eval_parents = cell_evaluation_parents(data)

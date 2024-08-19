@@ -1,9 +1,9 @@
 defmodule LivebookWeb.AppsDashboardLive do
   use LivebookWeb, :live_view
 
-  import LivebookWeb.AppHelpers
+  import LivebookWeb.AppComponents
 
-  alias LivebookWeb.LayoutHelpers
+  alias LivebookWeb.LayoutComponents
 
   on_mount LivebookWeb.SidebarHook
 
@@ -21,24 +21,27 @@ defmodule LivebookWeb.AppsDashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <LayoutHelpers.layout
-      current_page={~p"/apps"}
+    <LayoutComponents.layout
+      current_page={~p"/apps-dashboard"}
       current_user={@current_user}
       saved_hubs={@saved_hubs}
     >
-      <div class="p-4 md:px-12 md:py-7 max-w-screen-lg mx-auto">
+      <div class="space-y-2 p-4 md:px-12 md:py-7 max-w-screen-lg mx-auto">
         <div class="flex items-center justify-between">
-          <LayoutHelpers.title text="Apps" />
+          <LayoutComponents.title text="Local apps" />
           <.link navigate={~p"/apps"} class="flex items-center text-blue-600">
             <span class="font-semibold">Listing</span>
             <.remix_icon icon="arrow-right-line" class="align-middle ml-1" />
           </.link>
         </div>
-        <div class="mt-10">
+        <p class="text-gray-700 text-sm">
+          An overview of all deployed applications and previews running on this instance.
+        </p>
+        <div class="pt-6">
           <.app_list apps={@apps} />
         </div>
       </div>
-    </LayoutHelpers.layout>
+    </LayoutComponents.layout>
     """
   end
 
@@ -46,7 +49,7 @@ defmodule LivebookWeb.AppsDashboardLive do
     ~H"""
     <.no_entries>
       You do not have any apps running. <br />
-      You can deploy new apps by opening a notebook and clicking
+      You can preview and deploy new apps by opening a notebook and clicking
       <.remix_icon icon="rocket-line" class="align-top text-lg" /> in the sidebar.
     </.no_entries>
     """
@@ -58,25 +61,34 @@ defmodule LivebookWeb.AppsDashboardLive do
       <div :for={app <- Enum.sort_by(@apps, & &1.slug)} data-app-slug={app.slug}>
         <a
           phx-click={JS.toggle(to: "[data-app-slug=#{app.slug}] .toggle")}
-          class="flex items-center justify-between break-all mb-2 text-gray-800 font-medium text-xl hover:cursor-pointer"
+          class="flex items-center justify-between mb-2 hover:cursor-pointer"
         >
-          <%= "/" <> app.slug %>
-          <.remix_icon icon="arrow-drop-up-line" class="text-3xl text-gray-400 toggle" />
-          <.remix_icon icon="arrow-drop-down-line" class="text-3xl text-gray-400 hidden toggle" />
+          <span class="text-gray-800 font-medium text-xl break-all">
+            <%= "/" <> app.slug %>
+          </span>
+          <div class="flex items-center gap-2">
+            <.app_group_tag app_spec={app.app_spec} />
+            <.remix_icon icon="arrow-drop-up-line" class="text-3xl text-gray-400 toggle" />
+            <.remix_icon icon="arrow-drop-down-line" class="text-3xl text-gray-400 hidden toggle" />
+          </div>
         </a>
         <div class="toggle">
-          <div class="mt-4 flex flex-col gap-3">
+          <div :if={app.warnings != []} class="my-3 flex flex-col gap-3">
             <.message_box :for={warning <- app.warnings} kind={:warning} message={warning} />
           </div>
           <div class="flex-col mb-8">
             <div class="p-4 border-x border-t border-gray-200 rounded-t-lg ">
-              <div class="uppercase text-gray-500 text-sm font-medium leading-normal tracking-wider">
-                App Info
-              </div>
-              <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-[minmax(0,_2fr)_minmax(0,_2fr)_minmax(0,_1fr)_minmax(0,_1fr)_minmax(0,_1fr)] gap-4 mt-3">
+              <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-[minmax(0,_2fr)_minmax(0,_2fr)_minmax(0,_1fr)_minmax(0,_1fr)_minmax(0,_1fr)] gap-4">
                 <div class="break-words">
                   <.labeled_text label="Name">
                     <%= app.notebook_name %>
+                    <span
+                      :if={not app.public?}
+                      class="!inline tooltip top"
+                      data-tooltip="Password protected"
+                    >
+                      <.remix_icon icon="lock-line" />
+                    </span>
                   </.labeled_text>
                 </div>
                 <div class="break-all">
@@ -97,15 +109,22 @@ defmodule LivebookWeb.AppsDashboardLive do
                   </.labeled_text>
                 </div>
                 <div class="flex flex-col md:flex-row md:items-center justify-start lg:justify-end">
-                  <span class="tooltip top" data-tooltip="Terminate">
-                    <button
-                      class="icon-button text-right"
-                      aria-label="terminate app"
-                      phx-click={JS.push("terminate_app", value: %{slug: app.slug})}
-                    >
-                      <.remix_icon icon="delete-bin-6-line" class="text-lg" />
-                    </button>
-                  </span>
+                  <%= if app.permanent do %>
+                    <span class="tooltip top" data-tooltip="Permanent apps cannot be terminated">
+                      <.icon_button disabled>
+                        <.remix_icon icon="delete-bin-6-line" />
+                      </.icon_button>
+                    </span>
+                  <% else %>
+                    <span class="tooltip top" data-tooltip="Terminate">
+                      <.icon_button
+                        aria-label="terminate app"
+                        phx-click={JS.push("terminate_app", value: %{slug: app.slug})}
+                      >
+                        <.remix_icon icon="delete-bin-6-line" />
+                      </.icon_button>
+                    </span>
+                  <% end %>
                 </div>
               </div>
             </div>
@@ -125,7 +144,7 @@ defmodule LivebookWeb.AppsDashboardLive do
                     </a>
                   </:col>
                   <:col :let={app_session} label="Uptime">
-                    <%= format_datetime_relatively(app_session.created_at) %>
+                    <%= LivebookWeb.HTMLHelpers.format_datetime_relatively(app_session.created_at) %>
                   </:col>
                   <:col :let={app_session} label="Version">
                     v<%= app_session.version %>
@@ -135,30 +154,22 @@ defmodule LivebookWeb.AppsDashboardLive do
                   </:col>
                   <:actions :let={app_session}>
                     <span class="tooltip left" data-tooltip="Open">
-                      <a
-                        class={[
-                          "icon-button",
-                          app_session.app_status.lifecycle != :active && "disabled"
-                        ]}
+                      <.icon_button
+                        disabled={app_session.app_status.lifecycle != :active}
                         aria-label="open app"
-                        href={~p"/apps/#{app.slug}/#{app_session.id}"}
+                        href={~p"/apps/#{app.slug}/sessions/#{app_session.id}"}
                       >
-                        <.remix_icon icon="link" class="text-lg" />
-                      </a>
+                        <.remix_icon icon="link" />
+                      </.icon_button>
                     </span>
                     <span class="tooltip left" data-tooltip="Debug">
-                      <a
-                        class="icon-button"
-                        aria-label="debug app"
-                        href={~p"/sessions/#{app_session.id}"}
-                      >
-                        <.remix_icon icon="terminal-line" class="text-lg" />
-                      </a>
+                      <.icon_button aria-label="debug app" href={~p"/sessions/#{app_session.id}"}>
+                        <.remix_icon icon="terminal-line" />
+                      </.icon_button>
                     </span>
                     <%= if app_session.app_status.lifecycle == :active do %>
                       <span class="tooltip left" data-tooltip="Deactivate">
-                        <button
-                          class="icon-button"
+                        <.icon_button
                           aria-label="deactivate app session"
                           phx-click={
                             JS.push("deactivate_app_session",
@@ -166,13 +177,12 @@ defmodule LivebookWeb.AppsDashboardLive do
                             )
                           }
                         >
-                          <.remix_icon icon="stop-circle-line" class="text-lg" />
-                        </button>
+                          <.remix_icon icon="stop-circle-line" />
+                        </.icon_button>
                       </span>
                     <% else %>
                       <span class="tooltip left" data-tooltip="Terminate">
-                        <button
-                          class="icon-button"
+                        <.icon_button
                           aria-label="terminate app session"
                           phx-click={
                             JS.push("terminate_app_session",
@@ -180,8 +190,8 @@ defmodule LivebookWeb.AppsDashboardLive do
                             )
                           }
                         >
-                          <.remix_icon icon="delete-bin-6-line" class="text-lg" />
-                        </button>
+                          <.remix_icon icon="delete-bin-6-line" />
+                        </.icon_button>
                       </span>
                     <% end %>
                   </:actions>
@@ -199,6 +209,62 @@ defmodule LivebookWeb.AppsDashboardLive do
     """
   end
 
+  defp app_group_tag(%{app_spec: %Livebook.Apps.PreviewAppSpec{}} = assigns) do
+    ~H"""
+    <span
+      class="tooltip top"
+      data-tooltip={
+        ~S'''
+        This is an app preview, it has
+        been started manually
+        '''
+      }
+    >
+      <span class="font-medium bg-gray-100 text-gray-800 text-xs px-2.5 py-0.5 rounded cursor-default">
+        Preview
+      </span>
+    </span>
+    """
+  end
+
+  defp app_group_tag(%{app_spec: %Livebook.Apps.PathAppSpec{}} = assigns) do
+    ~H"""
+    <span
+      class="tooltip top"
+      data-tooltip={
+        ~S'''
+        This is a permanent app started
+        from LIVEBOOK_APPS_PATH
+        '''
+      }
+    >
+      <span class="font-medium bg-blue-100 text-blue-800 text-xs px-2.5 py-0.5 rounded cursor-default">
+        Apps directory
+      </span>
+    </span>
+    """
+  end
+
+  defp app_group_tag(%{app_spec: %Livebook.Apps.TeamsAppSpec{}} = assigns) do
+    ~H"""
+    <span
+      class="tooltip top"
+      data-tooltip={
+        ~S'''
+        This is a permanent app started
+        deployed via Livebook Teams
+        '''
+      }
+    >
+      <span class="font-medium bg-green-100 text-green-800 text-xs px-2.5 py-0.5 rounded cursor-default">
+        Livebook Teams
+      </span>
+    </span>
+    """
+  end
+
+  defp app_group_tag(assigns), do: ~H""
+
   defp grid(assigns) do
     ~H"""
     <div class="min-w-[650px]">
@@ -206,7 +272,10 @@ defmodule LivebookWeb.AppsDashboardLive do
         <div class="grid grid-cols-[minmax(0,_0.5fr)_minmax(0,_0.75fr)_minmax(0,_0.5fr)_minmax(0,_0.5fr)_minmax(0,_0.5fr)] md:grid-cols-[minmax(0,_2fr)_minmax(0,_2fr)_minmax(0,_1fr)_minmax(0,_1fr)_minmax(0,_1fr)] gap-4 px-2">
           <div
             :for={col <- @col}
-            class={["text-gray-500 text-sm font-normal", align_to_class(col[:align])]}
+            class={[
+              "text-gray-500 text-sm font-normal flex items-center",
+              align_to_class(col[:align])
+            ]}
           >
             <%= col[:label] %>
           </div>
@@ -215,7 +284,10 @@ defmodule LivebookWeb.AppsDashboardLive do
           <div class="grid grid-cols-[minmax(0,_0.5fr)_minmax(0,_0.75fr)_minmax(0,_0.5fr)_minmax(0,_0.5fr)_minmax(0,_0.5fr)] md:grid-cols-[minmax(0,_2fr)_minmax(0,_2fr)_minmax(0,_1fr)_minmax(0,_1fr)_minmax(0,_1fr)] gap-4">
             <div
               :for={col <- @col}
-              class={["py-2 text-gray-800 text-sm font-semibold", align_to_class(col[:align])]}
+              class={[
+                "py-2 text-gray-800 text-sm font-semibold flex items-center",
+                align_to_class(col[:align])
+              ]}
             >
               <%= render_slot(col, row) %>
             </div>

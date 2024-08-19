@@ -4,7 +4,7 @@ defmodule Livebook.Teams do
   alias Livebook.Hubs
   alias Livebook.Hubs.Team
   alias Livebook.Hubs.TeamClient
-  alias Livebook.Teams.{Requests, Org, DeploymentGroup}
+  alias Livebook.Teams.{Agent, AppDeployment, DeploymentGroup, Org, Requests}
 
   import Ecto.Changeset,
     only: [add_error: 3, apply_action: 2, apply_action!: 2, get_field: 2]
@@ -42,23 +42,18 @@ defmodule Livebook.Teams do
   defp create_org_request(%Org{} = org, attrs, callback) when is_function(callback, 1) do
     changeset = Org.changeset(org, attrs)
 
-    with {:ok, %Org{} = org} <- apply_action(changeset, :insert),
-         {:ok, response} <- callback.(org) do
-      {:ok, response}
-    else
-      {:error, %Ecto.Changeset{} = changeset} ->
-        {:error, changeset}
+    with {:ok, %Org{} = org} <- apply_action(changeset, :insert) do
+      case callback.(org) do
+        {:ok, response} ->
+          {:ok, response}
 
-      {:error, %{"errors" => errors_map}} ->
-        errors_map =
-          if errors = errors_map["key_hash"],
-            do: Map.put_new(errors_map, "teams_key", errors),
-            else: errors_map
+        {:error, %{"errors" => errors}} ->
+          errors = map_teams_field_to_livebook_field(errors, "key_hash", "teams_key")
+          {:error, changeset |> add_external_errors(errors) |> Map.replace!(:action, :insert)}
 
-        {:error, add_org_errors(changeset, errors_map)}
-
-      any ->
-        any
+        any ->
+          any
+      end
     end
   end
 
@@ -156,10 +151,6 @@ defmodule Livebook.Teams do
     Plug.Crypto.KeyGenerator.generate(binary_key, "notebook secret", cache: Plug.Crypto.Keys)
   end
 
-  defp add_org_errors(%Ecto.Changeset{} = changeset, errors_map) do
-    Requests.add_errors(changeset, Org.__schema__(:fields), errors_map)
-  end
-
   @doc """
   Returns an `%Ecto.Changeset{}` for tracking deployment group changes.
   """
@@ -169,69 +160,93 @@ defmodule Livebook.Teams do
   end
 
   @doc """
-  Updates a deployment group with the given changes.
-  """
-  @spec update_deployment_group(Team.t(), DeploymentGroup.t()) ::
-          {:ok, pos_integer()}
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
-  def update_deployment_group(%Team{} = team, deployment_group) do
-    case Requests.update_deployment_group(team, deployment_group) do
-      {:ok, %{"id" => id}} ->
-        {:ok, id}
-
-      {:error, %{"errors" => errors}} ->
-        {:error, Requests.add_errors(deployment_group, errors)}
-
-      any ->
-        any
-    end
-  end
-
-  @doc """
   Creates a Deployment Group.
   """
-  @spec create_deployment_group(Team.t(), DeploymentGroup.t()) ::
-          {:ok, pos_integer()}
+  @spec create_deployment_group(Team.t(), map()) ::
+          {:ok, DeploymentGroup.t()}
           | {:error, Ecto.Changeset.t()}
           | {:transport_error, String.t()}
-  def create_deployment_group(%Team{} = team, deployment_group) do
-    case Requests.create_deployment_group(team, deployment_group) do
-      {:ok, %{"id" => id}} ->
-        {:ok, id}
+  def create_deployment_group(%Team{} = team, attrs) do
+    changeset = DeploymentGroup.changeset(%DeploymentGroup{}, attrs)
 
-      {:error, %{"errors" => errors}} ->
-        {:error, Requests.add_errors(deployment_group, errors)}
+    with {:ok, %DeploymentGroup{} = deployment_group} <- apply_action(changeset, :insert) do
+      case Requests.create_deployment_group(team, deployment_group) do
+        {:ok, %{"id" => id}} ->
+          {:ok, %{deployment_group | id: to_string(id)}}
 
-      any ->
-        any
-    end
-  end
+        {:error, %{"errors" => errors}} ->
+          {:error,
+           changeset
+           |> add_external_errors(errors)
+           |> Map.replace!(:action, :insert)}
 
-  @doc """
-  Deletes a Deployment Group.
-  """
-  @spec delete_deployment_group(Team.t(), DeploymentGroup.t()) ::
-          :ok
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
-  def delete_deployment_group(%Team{} = team, deployment_group) do
-    case Requests.delete_deployment_group(team, deployment_group) do
-      {:ok, _} ->
-        :ok
-
-      {:error, %{"errors" => errors}} ->
-        {:error, Requests.add_errors(deployment_group, errors)}
-
-      any ->
-        any
+        any ->
+          any
+      end
     end
   end
 
   @doc """
   Gets a list of deployment groups for a given Hub.
   """
+  @spec get_deployment_groups(Team.t()) :: list(DeploymentGroup.t())
   def get_deployment_groups(team) do
     TeamClient.get_deployment_groups(team.id)
+  end
+
+  @doc """
+  Creates a new app deployment.
+  """
+  @spec deploy_app(Team.t(), AppDeployment.t()) ::
+          :ok
+          | {:error, Ecto.Changeset.t()}
+          | {:transport_error, String.t()}
+  def deploy_app(%Team{} = team, %AppDeployment{} = app_deployment) do
+    case Requests.deploy_app(team, app_deployment) do
+      {:ok, %{"id" => _id}} ->
+        :ok
+
+      {:error, %{"errors" => %{"detail" => error}}} ->
+        {:error, add_external_errors(app_deployment, %{"file" => [error]})}
+
+      {:error, %{"errors" => errors}} ->
+        {:error, add_external_errors(app_deployment, errors)}
+
+      any ->
+        any
+    end
+  end
+
+  @doc """
+  Gets a list of app deployments for a given Hub.
+  """
+  @spec get_app_deployments(Team.t()) :: list(AppDeployment.t())
+  def get_app_deployments(team) do
+    TeamClient.get_app_deployments(team.id)
+  end
+
+  @doc """
+  Gets a list of agents for a given Hub.
+  """
+  @spec get_agents(Team.t()) :: list(Agent.t())
+  def get_agents(team) do
+    TeamClient.get_agents(team.id)
+  end
+
+  defp map_teams_field_to_livebook_field(map, teams_field, livebook_field) do
+    if value = map[teams_field] do
+      Map.put_new(map, livebook_field, value)
+    else
+      map
+    end
+  end
+
+  defp add_external_errors(%Ecto.Changeset{data: %struct{}} = changeset, errors_map) do
+    errors = Requests.to_error_list(struct, errors_map)
+    Livebook.Utils.put_changeset_errors(changeset, errors)
+  end
+
+  defp add_external_errors(struct, errors_map) do
+    struct |> Ecto.Changeset.change() |> add_external_errors(errors_map)
   end
 end

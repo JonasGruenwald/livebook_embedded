@@ -1,47 +1,54 @@
 defmodule LivebookWeb.Hub.Teams.DeploymentGroupFormComponent do
   use LivebookWeb, :live_component
 
-  alias Livebook.Teams.DeploymentGroup
   alias Livebook.Teams
+  alias Livebook.Teams.DeploymentGroup
+
+  @impl true
+  def mount(socket) do
+    {:ok, assign(socket, form: nil, error_message: nil, hide_title: false, force_mode: nil)}
+  end
 
   @impl true
   def update(assigns, socket) do
-    deployment_group = assigns.deployment_group
-    hub = assigns.hub
-
-    deployment_group = deployment_group || %DeploymentGroup{hub_id: assigns.hub.id}
-    changeset = Teams.change_deployment_group(deployment_group)
-
     socket = assign(socket, assigns)
 
-    {:ok,
-     assign(socket,
-       deployment_group: deployment_group,
-       changeset: changeset,
-       mode: mode(deployment_group),
-       title: title(deployment_group),
-       button: button(deployment_group),
-       subtitle: subtitle(deployment_group, hub.hub_name),
-       error_message: nil
-     )}
+    if socket.assigns.form do
+      {:ok, socket}
+    else
+      attrs =
+        if mode = socket.assigns.force_mode do
+          %{mode: mode}
+        else
+          %{}
+        end
+
+      {:ok,
+       assign_form(
+         socket,
+         Teams.change_deployment_group(%DeploymentGroup{clustering: :auto}, attrs)
+       )}
+    end
+  end
+
+  defp assign_form(socket, changeset) do
+    assign(socket, :form, to_form(changeset))
   end
 
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="max-w-4xl flex flex-col space-y-5">
-      <h2 class="text-xl text-gray-800 font-medium pb-2 border-b border-gray-200">
-        <%= @title %>
-      </h2>
-
-      <p class="text-gray-700">
-        <%= @subtitle %>
-      </p>
+    <div class="flex flex-col space-y-5">
+      <h3 :if={not @hide_title} class="text-2xl font-semibold text-gray-800">
+        Add deployment group
+      </h3>
+      <div :if={@error_message} class="error-box">
+        <%= @error_message %>
+      </div>
       <div class="flex flex-columns gap-4">
         <.form
-          :let={f}
           id={"#{@id}-form"}
-          for={to_form(@changeset, as: :deployment_group)}
+          for={@form}
           phx-target={@myself}
           phx-change="validate"
           phx-submit="save"
@@ -49,37 +56,55 @@ defmodule LivebookWeb.Hub.Teams.DeploymentGroupFormComponent do
           class="basis-1/2 grow"
         >
           <div class="flex flex-col space-y-4">
+            <div>
+              <label class="mb-2 flex items-center gap-1 text-sm text-gray-800 font-medium">
+                Type
+              </label>
+              <div class="flex gap-y-6 sm:gap-x-4">
+                <.radio_card
+                  field={@form[:mode]}
+                  title="Online"
+                  value={:online}
+                  disabled={@force_mode != nil}
+                >
+                  Deploy Livebook apps to your infrastructure with the click of a button.
+                  This mode requires running app servers connected to Livebook Teams.
+                </.radio_card>
+
+                <.radio_card
+                  field={@form[:mode]}
+                  title="Airgapped"
+                  value={:offline}
+                  disabled={@force_mode}
+                >
+                  Manually deploy Livebook apps to your infrastructure via Dockerfiles.
+                  Connection to Livebook Teams is not required.
+                </.radio_card>
+              </div>
+            </div>
+
             <.text_field
-              field={f[:name]}
+              field={@form[:name]}
               label="Name"
               autofocus="true"
               spellcheck="false"
               autocomplete="off"
               phx-debounce
             />
-            <.select_field
-              label="Mode"
-              help={
-                ~S'''
-                Deployment group mode.
-                '''
-              }
-              field={f[:mode]}
-              options={[
-                {"Offline", "offline"},
-                {"Online", "online"}
-              ]}
-            />
+
+            <.hidden_field field={@form[:hub_id]} value={@hub.id} />
+
+            <LivebookWeb.AppComponents.deployment_group_form_content hub={@hub} form={@form} />
+
             <div class="flex space-x-2">
-              <button class="button-base button-blue" type="submit" disabled={not @changeset.valid?}>
-                <.remix_icon icon={@button.icon} class="align-middle mr-1" />
-                <span class="font-normal"><%= @button.label %></span>
-              </button>
-              <%= if @mode == :new do %>
-                <.link patch={@return_to} class="button-base button-outlined-gray">
-                  Cancel
-                </.link>
-              <% end %>
+              <.button type="submit" disabled={not @form.source.valid?}>
+                <.remix_icon icon="add-line" />
+                <span class="font-normal">Add</span>
+              </.button>
+
+              <.button :if={@return_to} color="gray" outlined patch={@return_to}>
+                Cancel
+              </.button>
             </div>
           </div>
         </.form>
@@ -88,25 +113,56 @@ defmodule LivebookWeb.Hub.Teams.DeploymentGroupFormComponent do
     """
   end
 
+  defp radio_card(assigns) do
+    ~H"""
+    <label class={[
+      "relative flex rounded-lg border p-4 w-1/2",
+      if(to_string(@field.value) == to_string(@value), do: "border-blue-500", else: "border-gray-200"),
+      if(@disabled, do: "opacity-70", else: "cursor-pointer")
+    ]}>
+      <input
+        type="radio"
+        name={@field.name}
+        value={@value}
+        checked={to_string(@field.value) == to_string(@value)}
+        class="sr-only"
+        disabled={@disabled}
+      />
+      <span class="flex flex-1">
+        <span class="flex flex-col">
+          <span class="block text-sm font-medium text-gray-900">
+            <%= @title %>
+          </span>
+          <span class="mt-1 flex items-center text-sm text-gray-700">
+            <%= render_slot(@inner_block) %>
+          </span>
+        </span>
+      </span>
+      <.remix_icon
+        icon="checkbox-circle-fill"
+        class={[
+          "text-blue-600 h-5 w-5",
+          if(to_string(@field.value) == to_string(@value), do: "visible", else: "invisible")
+        ]}
+      />
+    </label>
+    """
+  end
+
   @impl true
   def handle_event("save", %{"deployment_group" => attrs}, socket) do
-    changeset = Teams.change_deployment_group(socket.assigns.deployment_group, attrs)
-
-    with {:ok, deployment_group} <- Ecto.Changeset.apply_action(changeset, :update),
-         {:ok, id} <- save_deployment_group(deployment_group, socket) do
-      message =
-        case socket.assigns.mode do
-          :new -> "Deployment group #{deployment_group.name} added successfully"
-          :edit -> "Deployment group #{deployment_group.name} updated successfully"
-        end
-
-      {:noreply,
-       socket
-       |> put_flash(:success, message)
-       |> push_patch(to: ~p"/hub/#{socket.assigns.hub.id}/deployment-groups/edit/#{id}")}
+    with {:ok, _deployment_group} <- Teams.create_deployment_group(socket.assigns.hub, attrs) do
+      if return_to = socket.assigns.return_to do
+        {:noreply,
+         socket
+         |> put_flash(:success, "Deployment group added successfully")
+         |> push_patch(to: return_to)}
+      else
+        {:noreply, socket}
+      end
     else
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign(socket, changeset: Map.replace!(changeset, :action, :validate))}
+        {:noreply, assign_form(socket, changeset)}
 
       {:transport_error, message} ->
         {:noreply, assign(socket, error_message: message)}
@@ -118,32 +174,9 @@ defmodule LivebookWeb.Hub.Teams.DeploymentGroupFormComponent do
 
   def handle_event("validate", %{"deployment_group" => attrs}, socket) do
     changeset =
-      %DeploymentGroup{}
-      |> DeploymentGroup.changeset(attrs)
+      Teams.change_deployment_group(%DeploymentGroup{}, attrs)
       |> Map.replace!(:action, :validate)
 
-    {:noreply, assign(socket, changeset: changeset)}
+    {:noreply, assign_form(socket, changeset)}
   end
-
-  defp save_deployment_group(deployment_group, socket) do
-    case socket.assigns.mode do
-      :new -> Teams.create_deployment_group(socket.assigns.hub, deployment_group)
-      :edit -> Teams.update_deployment_group(socket.assigns.hub, deployment_group)
-    end
-  end
-
-  defp mode(%DeploymentGroup{name: nil}), do: :new
-  defp mode(_), do: :edit
-
-  defp title(%DeploymentGroup{name: nil}), do: "Add deployment group"
-  defp title(_), do: "Edit deployment group"
-
-  defp subtitle(%DeploymentGroup{name: nil}, hub_name),
-    do: "Add a new deployment group to #{hub_name}"
-
-  defp subtitle(%DeploymentGroup{name: deployment_group}, _),
-    do: "Manage the #{deployment_group} deployment group"
-
-  defp button(%DeploymentGroup{name: nil}), do: %{icon: "add-line", label: "Add"}
-  defp button(_), do: %{icon: "save-line", label: "Save"}
 end

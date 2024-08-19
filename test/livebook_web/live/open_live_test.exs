@@ -6,13 +6,18 @@ defmodule LivebookWeb.OpenLiveTest do
   alias Livebook.{Sessions, Session, FileSystem}
 
   describe "file selection" do
+    test "does not mention autosaving if disabled", %{conn: conn} do
+      refute conn |> get(~p"/open/storage") |> html_response(200) =~
+               "Looking for unsaved notebooks?"
+    end
+
     test "updates the list of files as the input changes", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/open/storage")
 
       path = Path.expand("../../../lib", __DIR__) <> "/"
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: path})
 
       # Render the view separately to make sure it received the :set_file event
@@ -25,7 +30,7 @@ defmodule LivebookWeb.OpenLiveTest do
       path = test_notebook_path("basic")
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: Path.dirname(path) <> "/"})
 
       view
@@ -48,7 +53,7 @@ defmodule LivebookWeb.OpenLiveTest do
       {:ok, view, _} = live(conn, ~p"/open/storage")
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: tmp_dir <> "/"})
 
       assert view
@@ -62,7 +67,7 @@ defmodule LivebookWeb.OpenLiveTest do
       path = File.cwd!() |> Path.join("nonexistent.livemd")
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: path})
 
       assert view
@@ -80,7 +85,7 @@ defmodule LivebookWeb.OpenLiveTest do
       File.chmod!(path, 0o444)
 
       view
-      |> element(~s{form[phx-change="set_path"]})
+      |> element(~s{form[id*="path-form"]})
       |> render_change(%{path: tmp_dir <> "/"})
 
       view

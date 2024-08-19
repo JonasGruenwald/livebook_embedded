@@ -24,22 +24,25 @@ config :mime, :types, %{
 }
 
 config :livebook,
-  teams_url: "https://teams.livebook.dev",
+  agent_name: "default",
+  allowed_uri_schemes: [],
   app_service_name: nil,
   app_service_url: nil,
-  authentication_mode: :token,
+  authentication: :token,
+  aws_credentials: false,
+  epmdless: false,
   feature_flags: [],
   force_ssl_host: nil,
   learn_notebooks: [],
   plugs: [],
+  rewrite_on: [],
   shutdown_callback: nil,
+  teams_auth?: false,
+  teams_url: "https://teams.livebook.dev",
   update_instructions_url: nil,
-  within_iframe: false,
-  allowed_uri_schemes: [],
-  aws_credentials: false
+  within_iframe: false
 
-# TODO: Remove this in aws_credentials 0.2.0
-config :aws_credentials, fail_if_unavailable: false
+config :livebook, Livebook.Apps.Manager, retry_backoff_base_ms: 5_000
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

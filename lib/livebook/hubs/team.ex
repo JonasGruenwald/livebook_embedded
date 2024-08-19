@@ -30,7 +30,7 @@ defmodule Livebook.Hubs.Team do
           offline: Offline.t() | nil
         }
 
-  @enforce_keys [:user_id, :org_id, :org_key_id, :session_token, :org_public_key, :teams_key]
+  @enforce_keys [:org_id, :org_key_id, :session_token, :teams_key]
 
   embedded_schema do
     field :org_id, :integer
@@ -113,6 +113,7 @@ defimpl Livebook.Hubs.Provider, for: Livebook.Hubs.Team do
   def load(team, fields) do
     {offline?, fields} = Map.pop(fields, :offline?, false)
 
+    # We don't want to persist offline in storage, so we read from persistent term
     offline =
       if offline? do
         :persistent_term.get({__MODULE__, :offline, fields.id})
@@ -139,13 +140,16 @@ defimpl Livebook.Hubs.Provider, for: Livebook.Hubs.Team do
 
   def disconnect(team), do: TeamClient.stop(team.id)
 
-  def connection_error(team) do
+  def connection_status(team) do
     cond do
       team.offline ->
-        "You are running an offline Hub for deployment. You cannot modify its settings."
+        "You are running an offline Workspace for deployment. You cannot modify its settings."
 
-      reason = TeamClient.get_connection_error(team.id) ->
-        "Cannot connect to Hub: #{reason}.\nWill attempt to reconnect automatically..."
+      team.user_id == nil ->
+        "You are running a Livebook app server. This worksace is in read-only mode."
+
+      reason = TeamClient.get_connection_status(team.id) ->
+        "Cannot connect to Teams: #{reason}.\nWill attempt to reconnect automatically..."
 
       true ->
         nil
@@ -205,87 +209,76 @@ defimpl Livebook.Hubs.Provider, for: Livebook.Hubs.Team do
 
   def get_secrets(team), do: TeamClient.get_secrets(team.id)
 
-  @spec create_secret(Team.t(), Secret.t()) ::
-          :ok
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
   def create_secret(%Team{} = team, %Secret{} = secret) do
     case Requests.create_secret(team, secret) do
       {:ok, %{"id" => _}} -> :ok
-      {:error, %{"errors" => errors}} -> {:error, add_secret_errors(secret, errors)}
+      {:error, %{"errors" => errors}} -> {:error, parse_secret_errors(errors)}
       any -> any
     end
   end
 
-  @spec update_secret(Team.t(), Secret.t()) ::
-          :ok
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
   def update_secret(%Team{} = team, %Secret{} = secret) do
     case Requests.update_secret(team, secret) do
       {:ok, %{"id" => _}} -> :ok
-      {:error, %{"errors" => errors}} -> {:error, add_secret_errors(secret, errors)}
+      {:error, %{"errors" => errors}} -> {:error, parse_secret_errors(errors)}
       any -> any
     end
   end
 
-  @spec delete_secret(Team.t(), Secret.t()) ::
-          :ok
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
   def delete_secret(%Team{} = team, %Secret{} = secret) do
     case Requests.delete_secret(team, secret) do
       {:ok, _} -> :ok
-      {:error, %{"errors" => errors}} -> {:error, add_secret_errors(secret, errors)}
+      {:error, %{"errors" => errors}} -> {:error, parse_secret_errors(errors)}
       any -> any
     end
   end
 
   def get_file_systems(team), do: TeamClient.get_file_systems(team.id)
 
-  @spec create_file_system(Team.t(), FileSystem.t()) ::
-          :ok
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
   def create_file_system(%Team{} = team, file_system) do
     case Requests.create_file_system(team, file_system) do
       {:ok, %{"id" => _}} -> :ok
-      {:error, %{"errors" => errors}} -> {:error, add_file_system_errors(file_system, errors)}
+      {:error, %{"errors" => errors}} -> {:error, parse_file_system_errors(file_system, errors)}
       any -> any
     end
   end
 
-  @spec update_file_system(Team.t(), FileSystem.t()) ::
-          :ok
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
   def update_file_system(%Team{} = team, file_system) do
     case Requests.update_file_system(team, file_system) do
       {:ok, %{"id" => _}} -> :ok
-      {:error, %{"errors" => errors}} -> {:error, add_file_system_errors(file_system, errors)}
+      {:error, %{"errors" => errors}} -> {:error, parse_file_system_errors(file_system, errors)}
       any -> any
     end
   end
 
-  @spec delete_file_system(Team.t(), FileSystem.t()) ::
-          :ok
-          | {:error, Ecto.Changeset.t()}
-          | {:transport_error, String.t()}
   def delete_file_system(%Team{} = team, file_system) do
     case Requests.delete_file_system(team, file_system) do
       {:ok, _} -> :ok
-      {:error, %{"errors" => errors}} -> {:error, add_file_system_errors(file_system, errors)}
+      {:error, %{"errors" => errors}} -> {:error, parse_file_system_errors(file_system, errors)}
       any -> any
     end
   end
 
-  defp add_secret_errors(%Secret{} = secret, errors_map) do
-    Requests.add_errors(secret, errors_map)
+  def deployment_groups(team), do: TeamClient.get_deployment_groups(team.id)
+
+  def get_app_specs(team) do
+    for app_deployment <- TeamClient.get_agent_app_deployments(team.id) do
+      %Livebook.Apps.TeamsAppSpec{
+        slug: app_deployment.slug,
+        version: app_deployment.version,
+        hub_id: app_deployment.hub_id,
+        app_deployment_id: app_deployment.id
+      }
+    end
   end
 
-  defp add_file_system_errors(file_system, errors_map) do
+  defp parse_secret_errors(errors_map) do
+    Requests.to_error_list(Secret, errors_map)
+  end
+
+  defp parse_file_system_errors(%struct{} = file_system, errors_map) do
     %{error_field: field} = FileSystem.external_metadata(file_system)
     errors_map = Map.new(errors_map, fn {_key, values} -> {field, values} end)
-    Requests.add_errors(file_system, errors_map)
+    Requests.to_error_list(struct, errors_map)
   end
 end

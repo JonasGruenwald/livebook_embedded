@@ -5,32 +5,37 @@ defmodule LivebookWeb.Hub.FileSystemFormComponent do
   alias Livebook.FileSystems
 
   @impl true
+  def mount(socket) do
+    {:ok, assign(socket, changeset: nil, error_message: nil)}
+  end
+
+  @impl true
   def update(assigns, socket) do
     {file_system, assigns} = Map.pop!(assigns, :file_system)
 
     mode = mode(file_system)
-    button = button(file_system)
+    button = button_attrs(file_system)
     title = title(file_system)
 
     file_system = file_system || %FileSystem.S3{hub_id: assigns.hub.id}
-    changeset = FileSystems.change_file_system(file_system)
-    socket = assign(socket, assigns)
+    changeset = socket.assigns.changeset || FileSystems.change_file_system(file_system)
 
     {:ok,
-     assign(socket,
+     socket
+     |> assign(assigns)
+     |> assign(
        file_system: file_system,
        changeset: changeset,
        mode: mode,
        title: title,
-       button: button,
-       error_message: nil
+       button: button
      )}
   end
 
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="p-6 flex flex-col space-y-5">
+    <div class="flex flex-col space-y-5">
       <h3 class="text-2xl font-semibold text-gray-800">
         <%= @title %>
       </h3>
@@ -83,13 +88,13 @@ defmodule LivebookWeb.Hub.FileSystemFormComponent do
             </p>
           <% end %>
           <div class="flex space-x-2">
-            <button class="button-base button-blue" type="submit" disabled={not @changeset.valid?}>
-              <.remix_icon icon={@button.icon} class="align-middle mr-1" />
+            <.button type="submit" disabled={not @changeset.valid?}>
+              <.remix_icon icon={@button.icon} />
               <span class="font-normal"><%= @button.label %></span>
-            </button>
-            <.link patch={@return_to} class="button-base button-outlined-gray">
+            </.button>
+            <.button color="gray" outlined patch={@return_to}>
               Cancel
-            </.link>
+            </.button>
           </div>
         </div>
       </.form>
@@ -115,7 +120,7 @@ defmodule LivebookWeb.Hub.FileSystemFormComponent do
 
     with {:ok, file_system} <- Ecto.Changeset.apply_action(changeset, :update),
          :ok <- check_file_system_connectivity(file_system),
-         :ok <- save_file_system(file_system, socket) do
+         :ok <- save_file_system(file_system, changeset, socket) do
       message =
         case socket.assigns.mode do
           :new -> "File storage added successfully"
@@ -147,10 +152,18 @@ defmodule LivebookWeb.Hub.FileSystemFormComponent do
     end
   end
 
-  defp save_file_system(file_system, socket) do
-    case socket.assigns.mode do
-      :new -> Livebook.Hubs.create_file_system(socket.assigns.hub, file_system)
-      :edit -> Livebook.Hubs.update_file_system(socket.assigns.hub, file_system)
+  defp save_file_system(file_system, changeset, socket) do
+    result =
+      case socket.assigns.mode do
+        :new -> Livebook.Hubs.create_file_system(socket.assigns.hub, file_system)
+        :edit -> Livebook.Hubs.update_file_system(socket.assigns.hub, file_system)
+      end
+
+    with {:error, errors} <- result do
+      {:error,
+       changeset
+       |> Livebook.Utils.put_changeset_errors(errors)
+       |> Map.replace!(:action, :validate)}
     end
   end
 
@@ -160,6 +173,6 @@ defmodule LivebookWeb.Hub.FileSystemFormComponent do
   defp title(nil), do: "Add file storage"
   defp title(_), do: "Edit file storage"
 
-  defp button(nil), do: %{icon: "add-line", label: "Add"}
-  defp button(_), do: %{icon: "save-line", label: "Save"}
+  defp button_attrs(nil), do: %{icon: "add-line", label: "Add"}
+  defp button_attrs(_), do: %{icon: "save-line", label: "Save"}
 end

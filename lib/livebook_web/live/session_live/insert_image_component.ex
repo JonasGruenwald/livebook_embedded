@@ -2,6 +2,7 @@ defmodule LivebookWeb.SessionLive.InsertImageComponent do
   use LivebookWeb, :live_component
 
   import Ecto.Changeset
+  import LivebookWeb.HTMLHelpers
 
   alias Livebook.FileSystem
 
@@ -33,7 +34,7 @@ defmodule LivebookWeb.SessionLive.InsertImageComponent do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="p-6 flex flex-col space-y-8">
+    <div class="flex flex-col space-y-8">
       <h3 class="text-2xl font-semibold text-gray-800">
         Insert image
       </h3>
@@ -68,16 +69,12 @@ defmodule LivebookWeb.SessionLive.InsertImageComponent do
           />
         </div>
         <div class="mt-8 flex justify-end space-x-2">
-          <.link patch={@return_to} class="button-base button-outlined-gray">
+          <.button color="gray" outlined patch={@return_to}>
             Cancel
-          </.link>
-          <button
-            class="button-base button-blue"
-            type="submit"
-            disabled={not @changeset.valid? or upload_disabled?(@uploads.image)}
-          >
+          </.button>
+          <.button type="submit" disabled={not @changeset.valid? or upload_disabled?(@uploads.image)}>
             Upload
-          </button>
+          </.button>
         </div>
       </.form>
     </div>

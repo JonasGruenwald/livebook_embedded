@@ -1,8 +1,15 @@
 defmodule Livebook.TeamsTest do
   use Livebook.TeamsIntegrationCase, async: true
 
-  alias Livebook.Teams
+  alias Livebook.{FileSystem, Notebook, Teams, Utils}
   alias Livebook.Teams.Org
+
+  setup do
+    Livebook.Hubs.Broadcasts.subscribe([:connection, :file_systems, :secrets])
+    Livebook.Teams.Broadcasts.subscribe([:clients, :deployment_groups, :app_deployments, :agents])
+
+    :ok
+  end
 
   describe "create_org/1" do
     test "returns the device flow data to confirm the org creation" do
@@ -161,97 +168,94 @@ defmodule Livebook.TeamsTest do
 
   describe "create_deployment_group/2" do
     test "creates a new deployment group when the data is valid", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = build(:deployment_group)
+      team = connect_to_teams(user, node)
 
-      assert {:ok, _id} = Teams.create_deployment_group(team, deployment_group)
+      attrs = params_for(:deployment_group, name: "DEPLOYMENT_GROUP_#{team.id}", mode: :online)
+
+      assert {:ok, deployment_group} = Teams.create_deployment_group(team, attrs)
+
+      %{id: id, name: name, mode: mode} = deployment_group
+
+      assert_receive {:deployment_group_created, %{id: ^id, name: ^name, mode: ^mode}}
 
       # Guarantee uniqueness
-      assert {:error, changeset} = Teams.create_deployment_group(team, deployment_group)
+      assert {:error, changeset} = Teams.create_deployment_group(team, attrs)
       assert "has already been taken" in errors_on(changeset).name
     end
 
     test "returns changeset errors when the name is invalid", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = %{build(:deployment_group) | name: ""}
+      team = connect_to_teams(user, node)
+      attrs = params_for(:deployment_group, name: "")
 
-      assert {:error, changeset} = Teams.create_deployment_group(team, deployment_group)
+      assert {:error, changeset} = Teams.create_deployment_group(team, attrs)
       assert "can't be blank" in errors_on(changeset).name
-    end
-
-    test "returns changeset errors when the mode is blank", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = %{build(:deployment_group) | mode: ""}
-
-      assert {:error, changeset} = Teams.create_deployment_group(team, deployment_group)
-      assert "can't be blank" in errors_on(changeset).mode
     end
 
     test "returns changeset errors when the mode is invalid", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = %{build(:deployment_group) | mode: "invalid"}
+      team = connect_to_teams(user, node)
+      attrs = params_for(:deployment_group, mode: "invalid")
 
-      assert {:error, changeset} = Teams.create_deployment_group(team, deployment_group)
+      assert {:error, changeset} = Teams.create_deployment_group(team, attrs)
       assert "is invalid" in errors_on(changeset).mode
     end
   end
 
-  describe "update_deployment_group/2" do
-    test "updates a deployment group", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = build(:deployment_group, name: "BAR", mode: "online")
+  describe "deploy_app/2" do
+    @tag :tmp_dir
+    test "deploys app to Teams from a notebook", %{user: user, node: node, tmp_dir: tmp_dir} do
+      team = connect_to_teams(user, node)
+      attrs = params_for(:deployment_group, name: "BAZ", mode: :online)
+      {:ok, %{id: id}} = Teams.create_deployment_group(team, attrs)
 
-      assert {:ok, id} = Teams.create_deployment_group(team, deployment_group)
+      assert_receive {:deployment_group_created, %{id: ^id}}
 
-      update_deployment_group = %{deployment_group | id: id, name: "BAZ"}
-      assert {:ok, ^id} = Teams.update_deployment_group(team, update_deployment_group)
-    end
+      # creates the app deployment
+      slug = Utils.random_short_id()
+      title = "MyNotebook-#{slug}"
+      app_settings = %{Notebook.AppSettings.new() | slug: slug}
 
-    test "returns changeset errors when the new name is invalid", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = build(:deployment_group, name: "BAR", mode: "online")
+      notebook = %{
+        Notebook.new()
+        | app_settings: app_settings,
+          name: title,
+          hub_id: team.id,
+          deployment_group_id: id
+      }
 
-      assert {:ok, id} = Teams.create_deployment_group(team, deployment_group)
+      files_dir = FileSystem.File.local(tmp_dir)
+      assert {:ok, app_deployment} = Teams.AppDeployment.new(notebook, files_dir)
+      assert Teams.deploy_app(team, app_deployment) == :ok
 
-      update_deployment_group = %{deployment_group | id: id, name: ""}
+      sha = app_deployment.sha
+      multi_session = app_settings.multi_session
+      access_type = app_settings.access_type
 
-      assert {:error, changeset} =
-               Teams.update_deployment_group(team, update_deployment_group)
+      assert_receive {:app_deployment_started,
+                      %Livebook.Teams.AppDeployment{
+                        slug: ^slug,
+                        sha: ^sha,
+                        title: ^title,
+                        multi_session: ^multi_session,
+                        access_type: ^access_type,
+                        deployment_group_id: ^id
+                      } = app_deployment2}
 
-      assert "can't be blank" in errors_on(changeset).name
-    end
+      assert {:error,
+              %{errors: [slug: {"should only contain alphanumeric characters and dashes", []}]}} =
+               Teams.deploy_app(team, %{app_deployment | slug: "@abc"})
 
-    test "returns changeset errors when the new mode is invalid", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = build(:deployment_group, name: "BAR", mode: "online")
+      assert {:error, %{errors: [multi_session: {"can't be blank", []}]}} =
+               Teams.deploy_app(team, %{app_deployment | multi_session: nil})
 
-      assert {:ok, id} = Teams.create_deployment_group(team, deployment_group)
+      assert {:error, %{errors: [access_type: {"can't be blank", []}]}} =
+               Teams.deploy_app(team, %{app_deployment | access_type: nil})
 
-      update_deployment_group = %{deployment_group | id: id, mode: ""}
+      assert {:error, %{errors: [access_type: {"is invalid", []}]}} =
+               Teams.deploy_app(team, %{app_deployment | access_type: :abc})
 
-      assert {:error, changeset} =
-               Teams.update_deployment_group(team, update_deployment_group)
-
-      assert "can't be blank" in errors_on(changeset).mode
-
-      update_deployment_group = %{deployment_group | id: id, mode: "invalid"}
-
-      assert {:error, changeset} =
-               Teams.update_deployment_group(team, update_deployment_group)
-
-      assert "is invalid" in errors_on(changeset).mode
-    end
-  end
-
-  describe "delete_deployment_group/2" do
-    test "deletes a deployment group", %{user: user, node: node} do
-      team = create_team_hub(user, node)
-      deployment_group = build(:deployment_group, name: "BAR", mode: "online")
-
-      assert {:ok, id} = Teams.create_deployment_group(team, deployment_group)
-
-      delete_deployment_group = %{deployment_group | id: id}
-      assert Teams.delete_deployment_group(team, delete_deployment_group) == :ok
+      # force app deployment to be stopped
+      erpc_call(node, :toggle_app_deployment, [app_deployment2.id, team.org_id])
+      assert_receive {:app_deployment_stopped, ^app_deployment2}
     end
   end
 end

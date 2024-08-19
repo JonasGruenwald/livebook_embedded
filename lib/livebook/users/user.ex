@@ -16,6 +16,7 @@ defmodule Livebook.Users.User do
           id: id(),
           name: String.t() | nil,
           email: String.t() | nil,
+          payload: map() | nil,
           hex_color: hex_color()
         }
 
@@ -25,6 +26,7 @@ defmodule Livebook.Users.User do
   embedded_schema do
     field :name, :string
     field :email, :string
+    field :payload, :map
     field :hex_color, Livebook.EctoTypes.HexColor
   end
 
@@ -43,7 +45,7 @@ defmodule Livebook.Users.User do
 
   def changeset(user, attrs \\ %{}) do
     user
-    |> cast(attrs, [:id, :name, :email, :hex_color])
-    |> validate_required([:id, :name, :hex_color])
+    |> cast(attrs, [:name, :email, :hex_color])
+    |> validate_required([:hex_color])
   end
 end

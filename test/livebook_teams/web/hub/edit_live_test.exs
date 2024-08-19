@@ -5,20 +5,20 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
   import Livebook.TestHelpers
 
   alias Livebook.Hubs
-  alias Livebook.Teams.DeploymentGroup
 
-  setup %{user: user, node: node} do
-    Livebook.Hubs.Broadcasts.subscribe([:crud, :connection, :secrets, :file_systems])
-    Livebook.Teams.Broadcasts.subscribe([:deployment_groups])
-    hub = create_team_hub(user, node)
-    id = hub.id
+  describe "user" do
+    setup %{user: user, node: node} do
+      Livebook.Hubs.Broadcasts.subscribe([:crud, :connection, :secrets, :file_systems])
+      Livebook.Teams.Broadcasts.subscribe([:clients, :deployment_groups])
+      hub = create_team_hub(user, node)
+      id = hub.id
 
-    assert_receive {:hub_connected, ^id}
+      assert_receive {:hub_connected, ^id}
+      assert_receive {:client_connected, ^id}
 
-    {:ok, hub: hub}
-  end
+      {:ok, hub: hub}
+    end
 
-  describe "team" do
     test "updates the hub", %{conn: conn, hub: hub} do
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
 
@@ -37,7 +37,7 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
       |> render_submit(%{"team" => attrs})
 
       update = render(view)
-      assert update =~ "Hub updated successfully"
+      assert update =~ "Workspace updated successfully"
       assert update =~ "🐈"
 
       id = hub.id
@@ -52,13 +52,13 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
 
       view
-      |> element("#delete-hub", "Delete hub")
+      |> element("#delete-hub", "Delete workspace")
       |> render_click()
 
       render_confirm(view)
 
       assert_receive {:hub_changed, ^id}
-      %{"success" => "Hub deleted successfully"} = assert_redirect(view, "/")
+      %{"success" => "Workspace deleted successfully"} = assert_redirect(view, "/")
 
       {:ok, view, _html} = live(conn, ~p"/")
 
@@ -68,7 +68,7 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
 
     test "creates a secret", %{conn: conn, hub: hub} do
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
-      secret = build(:secret, name: "TEAM_ADD_SECRET", hub_id: hub.id)
+      secret = build(:secret, hub_id: hub.id)
 
       attrs = %{
         secret: %{
@@ -101,23 +101,21 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
 
       assert_receive {:secret_created, ^secret}
       assert_patch(view, "/hub/#{hub.id}")
-      assert render(view) =~ "Secret TEAM_ADD_SECRET added successfully"
+      assert render(view) =~ "Secret #{secret.name} added successfully"
       assert render(element(view, "#hub-secrets-list")) =~ secret.name
       assert secret in Livebook.Hubs.get_secrets(hub)
 
       # Guarantee it shows the error from API
-
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}/secrets/new")
 
-      view
-      |> element("#secrets-form")
-      |> render_submit(attrs)
-
-      assert render(view) =~ "has already been taken"
+      assert view
+             |> element("#secrets-form")
+             |> render_submit(attrs) =~ "has already been taken"
     end
 
     test "updates existing secret", %{conn: conn, hub: hub} do
-      secret = insert_secret(name: "TEAM_EDIT_SECRET", hub_id: hub.id)
+      secret = insert_secret(hub_id: hub.id)
+
       assert_receive {:secret_created, ^secret}
 
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
@@ -133,7 +131,7 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
       new_value = "new_value"
 
       view
-      |> element("#hub-secret-#{secret.name}-edit")
+      |> element("#hub-secrets-list [aria-label=\"edit #{secret.name}\"]")
       |> render_click(%{"secret_name" => secret.name})
 
       assert_patch(view, ~p"/hub/#{hub.id}/secrets/edit/#{secret.name}")
@@ -155,13 +153,13 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
 
       assert_receive {:secret_updated, ^updated_secret}
       assert_patch(view, "/hub/#{hub.id}")
-      assert render(view) =~ "Secret TEAM_EDIT_SECRET updated successfully"
+      assert render(view) =~ "Secret #{secret.name} updated successfully"
       assert render(element(view, "#hub-secrets-list")) =~ secret.name
       assert updated_secret in Livebook.Hubs.get_secrets(hub)
     end
 
     test "deletes existing secret", %{conn: conn, hub: hub} do
-      secret = insert_secret(name: "TEAM_DELETE_SECRET", hub_id: hub.id)
+      secret = insert_secret(hub_id: hub.id)
       assert_receive {:secret_created, ^secret}
 
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
@@ -171,15 +169,14 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
              |> has_element?()
 
       view
-      |> element("#hub-secret-#{secret.name}-delete", "Delete")
+      |> element("#hub-secrets-list [aria-label=\"delete #{secret.name}\"]")
       |> render_click()
 
       render_confirm(view)
 
       assert_receive {:secret_deleted, ^secret}
       assert_patch(view, "/hub/#{hub.id}")
-      assert render(view) =~ "Secret TEAM_DELETE_SECRET deleted successfully"
-      refute render(element(view, "#hub-secrets-list")) =~ secret.name
+      assert render(view) =~ "Secret #{secret.name} deleted successfully"
       refute secret in Livebook.Hubs.get_secrets(hub)
     end
 
@@ -295,155 +292,72 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
       refute render(element(view, "#hub-file-systems-list")) =~ file_system.bucket_url
       refute file_system in Livebook.Hubs.get_file_systems(hub)
     end
+  end
 
-    test "creates a deployment group", %{conn: conn, hub: hub} do
+  describe "agent" do
+    setup %{node: node} do
+      Livebook.Hubs.Broadcasts.subscribe([:crud, :connection])
+      {agent_key, org, deployment_group, hub} = create_agent_team_hub(node)
+      id = hub.id
+
+      assert_receive {:hub_changed, ^id}
+      assert_receive {:hub_connected, ^id}
+
+      {:ok, hub: hub, agent_key: agent_key, org: org, deployment_group: deployment_group}
+    end
+
+    test "shows an error when creating a secret", %{conn: conn, hub: hub} do
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
-
-      deployment_group =
-        build(:deployment_group,
-          name: "TEAM_ADD_DEPLOYMENT_GROUP",
-          mode: "offline",
-          hub_id: hub.id
-        )
+      secret = build(:secret, hub_id: hub.id)
 
       attrs = %{
-        deployment_group: %{
-          name: deployment_group.name,
-          value: deployment_group.mode,
-          hub_id: deployment_group.hub_id
+        secret: %{
+          name: secret.name,
+          value: secret.value,
+          hub_id: secret.hub_id
         }
       }
 
-      view
-      |> element("#add-deployment-group")
-      |> render_click()
-
-      assert_patch(view, ~p"/hub/#{hub.id}/deployment-groups/new")
-
-      {:ok, view, html} = live(conn, ~p"/hub/#{hub.id}/deployment-groups/new")
-      assert html =~ "Add a new deployment group to"
+      refute render(view) =~ secret.name
 
       view
-      |> element("#deployment-groups-form")
-      |> render_change(attrs)
+      |> element("#add-secret")
+      |> render_click(%{})
 
-      refute view
-             |> element("#deployment-groups-form button[disabled]")
-             |> has_element?()
+      assert_patch(view, ~p"/hub/#{hub.id}/secrets/new")
+      assert render(view) =~ "Add secret"
 
-      view
-      |> element("#deployment-groups-form")
-      |> render_submit(attrs)
+      assert view
+             |> element("#secrets-form")
+             |> render_submit(attrs) =~
+               "You are not authorized to perform this action, make sure you have the access and you are not in a Livebook App Server/Offline instance"
 
-      assert_receive {:deployment_group_created,
-                      %DeploymentGroup{id: id, name: "TEAM_ADD_DEPLOYMENT_GROUP"} =
-                        deployment_group}
-
-      assert_patch(view, "/hub/#{hub.id}/deployment-groups/edit/#{id}")
-      assert render(view) =~ "Deployment group TEAM_ADD_DEPLOYMENT_GROUP added successfully"
-      assert deployment_group in Livebook.Teams.get_deployment_groups(hub)
-
-      # Guarantee it shows the error from API
-
-      {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}/deployment-groups/new")
-
-      view
-      |> element("#deployment-groups-form")
-      |> render_submit(attrs)
-
-      assert render(view) =~ "has already been taken"
+      refute secret in Livebook.Hubs.get_secrets(hub)
     end
 
-    test "updates existing deployment group", %{conn: conn, hub: hub} do
-      insert_deployment_group(
-        name: "TEAM_EDIT_DEPLOYMENT_GROUP",
-        mode: "online",
-        hub_id: hub.id
-      )
-
-      assert_receive {:deployment_group_created,
-                      %DeploymentGroup{name: "TEAM_EDIT_DEPLOYMENT_GROUP"} = deployment_group}
-
+    test "shows an error when creating a file system", %{conn: conn, hub: hub} do
       {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
 
-      attrs = %{
-        deployment_group: %{
-          id: deployment_group.id,
-          name: deployment_group.name,
-          mode: deployment_group.mode,
-          hub_id: deployment_group.hub_id
-        }
-      }
+      bypass = Bypass.open()
+      file_system = build_bypass_file_system(bypass, hub.id)
+      attrs = %{file_system: Livebook.FileSystem.dump(file_system)}
 
-      new_mode = "offline"
+      expect_s3_listing(bypass)
+      refute render(view) =~ file_system.bucket_url
 
       view
-      |> element("#hub-deployment-group-#{deployment_group.id}-edit")
-      |> render_click(%{"deployment_group_name" => deployment_group.id})
+      |> element("#add-file-system")
+      |> render_click(%{})
 
-      assert_patch(view, ~p"/hub/#{hub.id}/deployment-groups/edit/#{deployment_group.id}")
+      assert_patch(view, ~p"/hub/#{hub.id}/file-systems/new")
+      assert render(view) =~ "Add file storage"
 
-      {:ok, view, html} =
-        live(conn, ~p"/hub/#{hub.id}/deployment-groups/edit/#{deployment_group.id}")
+      assert view
+             |> element("#file-systems-form")
+             |> render_submit(attrs) =~
+               "You are not authorized to perform this action, make sure you have the access and you are not in a Livebook App Server/Offline instance"
 
-      assert html =~ "Edit deployment group"
-      assert html =~ "Manage the #{deployment_group.name} deployment group"
-
-      view
-      |> element("#deployment-groups-form")
-      |> render_change(attrs)
-
-      refute view
-             |> element("#deployment-groups-form button[disabled]")
-             |> has_element?()
-
-      view
-      |> element("#deployment-groups-form")
-      |> render_submit(put_in(attrs.deployment_group.mode, new_mode))
-
-      updated_deployment_group = %{deployment_group | mode: new_mode}
-
-      assert_receive {:deployment_group_updated, ^updated_deployment_group}
-      assert_patch(view, "/hub/#{hub.id}/deployment-groups/edit/#{deployment_group.id}")
-      assert render(view) =~ "Deployment group TEAM_EDIT_DEPLOYMENT_GROUP updated successfully"
-      assert updated_deployment_group in Livebook.Teams.get_deployment_groups(hub)
-    end
-
-    test "deletes existing deployment group", %{conn: conn, hub: hub} do
-      insert_deployment_group(
-        name: "TEAM_DELETE_DEPLOYMENT_GROUP",
-        mode: "online",
-        hub_id: hub.id
-      )
-
-      assert_receive {:deployment_group_created,
-                      %DeploymentGroup{name: "TEAM_DELETE_DEPLOYMENT_GROUP"} = deployment_group}
-
-      {:ok, view, _html} = live(conn, ~p"/hub/#{hub.id}")
-
-      refute view
-             |> element("#deployment-groups-form button[disabled]")
-             |> has_element?()
-
-      view
-      |> element("#hub-deployment-group-#{deployment_group.id}-delete", "Delete")
-      |> render_click()
-
-      render_confirm(view)
-
-      assert_receive {:deployment_group_deleted,
-                      %DeploymentGroup{name: "TEAM_DELETE_DEPLOYMENT_GROUP"}}
-
-      assert_patch(view, "/hub/#{hub.id}")
-      assert render(view) =~ "Deployment group TEAM_DELETE_DEPLOYMENT_GROUP deleted successfully"
-      refute render(element(view, "#hub-deployment-groups-list")) =~ deployment_group.name
-      refute deployment_group in Livebook.Teams.get_deployment_groups(hub)
-    end
-
-    test "raises an error if the deployment group does not exist", %{conn: conn, hub: hub} do
-      assert_raise LivebookWeb.NotFoundError, fn ->
-        live(conn, ~p"/hub/#{hub.id}/deployment-groups/edit/9999999")
-      end
+      refute file_system in Livebook.Hubs.get_file_systems(hub)
     end
   end
 
@@ -460,14 +374,17 @@ defmodule LivebookWeb.Integration.Hub.EditLiveTest do
   end
 
   defmodule Global do
+    # Not async, because we alter global config (default hub)
     use Livebook.TeamsIntegrationCase, async: false
 
     setup %{user: user, node: node} do
       Livebook.Hubs.Broadcasts.subscribe([:crud, :connection, :secrets, :file_systems])
+      Livebook.Teams.Broadcasts.subscribe([:clients])
       hub = create_team_hub(user, node)
       id = hub.id
 
       assert_receive {:hub_connected, ^id}
+      assert_receive {:client_connected, ^id}
 
       {:ok, hub: hub}
     end

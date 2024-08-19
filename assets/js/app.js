@@ -48,7 +48,7 @@ function connect() {
       },
       hooks: hooks,
       dom: morphdomOptions,
-    }
+    },
   );
 
   // Show progress bar on live navigation and form submits
@@ -126,7 +126,11 @@ if (hasCookiesAccess()) {
           third-party cookies.
         </div>
         <div class="mt-6">
-          <a id="open-app" class="button-base button-blue" target="_blank">
+          <a
+            id="open-app"
+            class="px-5 py-2 font-medium text-sm inline-flex rounded-lg border whitespace-nowrap items-center justify-center gap-1 border-transparent bg-blue-600 text-white hover:bg-blue-700 focus:bg-blue-700"
+            target="_blank"
+          >
             Open app
           </a>
         </div>
@@ -140,11 +144,11 @@ if (hasCookiesAccess()) {
 }
 
 function hasCookiesAccess() {
-  document.cookie = `lb:probe_cookie=;path=/${cookieOptions()}`;
+  document.cookie = `lb_probe_cookie=;path=/${cookieOptions()}`;
 
   return document.cookie
     .split("; ")
-    .some((cookie) => cookie.startsWith(`lb:probe_cookie=`));
+    .some((cookie) => cookie.startsWith(`lb_probe_cookie=`));
 }
 
 // vscode Event forwarding should be registered immediately, regardless of connection status

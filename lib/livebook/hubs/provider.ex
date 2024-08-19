@@ -19,6 +19,8 @@ defprotocol Livebook.Hubs.Provider do
   """
   @type notebook_stamp :: map()
 
+  @type field_errors :: list({atom(), list(String.t())})
+
   @doc """
   Transforms given hub to `Livebook.Hubs.Metadata` struct.
   """
@@ -60,7 +62,7 @@ defprotocol Livebook.Hubs.Provider do
   """
   @spec create_secret(t(), Secret.t()) ::
           :ok
-          | {:error, Ecto.Changeset.t()}
+          | {:error, field_errors()}
           | {:transport_error, String.t()}
   def create_secret(hub, secret)
 
@@ -69,7 +71,7 @@ defprotocol Livebook.Hubs.Provider do
   """
   @spec update_secret(t(), Secret.t()) ::
           :ok
-          | {:error, Ecto.Changeset.t()}
+          | {:error, field_errors()}
           | {:transport_error, String.t()}
   def update_secret(hub, secret)
 
@@ -80,10 +82,10 @@ defprotocol Livebook.Hubs.Provider do
   def delete_secret(hub, secret)
 
   @doc """
-  Gets the connection error from hub.
+  Gets the connection status from hub.
   """
-  @spec connection_error(t()) :: String.t() | nil
-  def connection_error(hub)
+  @spec connection_status(t()) :: String.t() | nil
+  def connection_status(hub)
 
   @doc """
   Generates a notebook stamp.
@@ -120,7 +122,7 @@ defprotocol Livebook.Hubs.Provider do
   """
   @spec create_file_system(t(), FileSystem.t()) ::
           :ok
-          | {:error, Ecto.Changeset.t()}
+          | {:error, field_errors()}
           | {:transport_error, String.t()}
   def create_file_system(hub, file_system)
 
@@ -129,7 +131,7 @@ defprotocol Livebook.Hubs.Provider do
   """
   @spec update_file_system(t(), FileSystem.t()) ::
           :ok
-          | {:error, Ecto.Changeset.t()}
+          | {:error, field_errors()}
           | {:transport_error, String.t()}
   def update_file_system(hub, file_system)
 
@@ -138,4 +140,19 @@ defprotocol Livebook.Hubs.Provider do
   """
   @spec delete_file_system(t(), FileSystem.t()) :: :ok | {:transport_error, String.t()}
   def delete_file_system(hub, file_system)
+
+  @doc """
+  Get the deployment groups for a given hub.
+
+  Returns `nil` if deployment groups are not applicable to this hub.
+  """
+  @spec deployment_groups(t()) ::
+          list(%{id: String.t(), name: String.t(), secrets: list(Secret.t())}) | nil
+  def deployment_groups(hub)
+
+  @doc """
+  Gets app specs for permanent apps sourced from the given hub.
+  """
+  @spec get_app_specs(t()) :: list(Livebook.Apps.AppSpec.t())
+  def get_app_specs(hub)
 end

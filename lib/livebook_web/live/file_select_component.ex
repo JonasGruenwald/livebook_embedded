@@ -13,8 +13,7 @@ defmodule LivebookWeb.FileSelectComponent do
   #
   #   * `:extnames` - a list of file extensions that should be shown
   #
-  #   * `:submit_event` - the process event sent on form submission,
-  #     use `nil` for no action
+  #   * `:on_submit` - `%JS{}` to execute on form submission
   #
   #   * `:target` - either a pid or `{component_module, id}` to send
   #     events to
@@ -28,7 +27,7 @@ defmodule LivebookWeb.FileSelectComponent do
   # To force the component to refetch the displayed files you can
   # `send_update` with `force_reload: true` to the component.
 
-  import LivebookWeb.FileSystemHelpers
+  import LivebookWeb.FileSystemComponents
 
   alias Livebook.FileSystem
 
@@ -41,7 +40,7 @@ defmodule LivebookWeb.FileSelectComponent do
        # Component default attribute values
        inner_block: nil,
        file_system_select_disabled: false,
-       submit_event: nil,
+       on_submit: nil,
        # State
        current_dir: nil,
        deleting_file: nil,
@@ -100,18 +99,16 @@ defmodule LivebookWeb.FileSelectComponent do
             myself={@myself}
           />
           <form
+            id={"#{@id}-path-form"}
             class="grow"
-            phx-change="set_path"
-            phx-submit={if @submit_event, do: "submit"}
-            phx-nosubmit={!@submit_event}
-            phx-target={@myself}
+            phx-change={JS.push("set_path", target: @myself)}
+            phx-submit={@on_submit}
+            phx-nosubmit={@on_submit == nil}
           >
-            <input
-              class="input"
-              id={"#{@id}-input-path"}
+            <.text_field
+              id={"#{@id}-path-input"}
               aria-label="file path"
               phx-hook="FocusOnUpdate"
-              type="text"
               name="path"
               placeholder="File"
               value={@file.path}
@@ -126,9 +123,9 @@ defmodule LivebookWeb.FileSelectComponent do
           position={:bottom_right}
         >
           <:toggle>
-            <button class="icon-button" tabindex="-1" aria-label="add">
-              <.remix_icon icon="add-line" class="text-xl" />
-            </button>
+            <.icon_button tabindex="-1" aria-label="add">
+              <.remix_icon icon="add-line" />
+            </.icon_button>
           </:toggle>
           <.menu_item>
             <button role="menuitem" phx-click={js_show_new_item_section("#{@id}-new-dir-section")}>
@@ -216,10 +213,24 @@ defmodule LivebookWeb.FileSelectComponent do
           />
 
           <div
-            :if={any_highlighted?(@file_infos)}
+            :if={@uploads.folder.entries != []}
+            class="border-b border-dashed border-grey-200 mb-2 pb-2"
+          >
+            <div :for={file <- @uploads.folder.entries} class="p-2 flex gap-2 items-center">
+              <.spinner />
+              <span class="font-medium text-gray-500"><%= file.client_name %></span>
+              <div class="grow" />
+              <.icon_button type="button" phx-click="clear-file" phx-target={@myself} tabindex="-1">
+                <.remix_icon icon="close-line" />
+              </.icon_button>
+            </div>
+          </div>
+
+          <div
+            :if={@highlighted_file_infos != []}
             class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 border-b border-dashed border-grey-200 mb-2 pb-2"
           >
-            <%= for file_info <- @file_infos, file_info.highlighted != "" do %>
+            <%= for file_info <- Enum.take(@highlighted_file_infos, visible_files_limit()) do %>
               <.file
                 id={"#{@id}-file-#{file_info.id}"}
                 file_info={file_info}
@@ -228,10 +239,11 @@ defmodule LivebookWeb.FileSelectComponent do
                 renamed_name={@renamed_name}
               />
             <% end %>
+            <.more_files_indicator length={length(@highlighted_file_infos)} />
           </div>
 
           <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-            <%= for file_info <- @file_infos, file_info.highlighted == "" do %>
+            <%= for file_info <- Enum.take(@unhighlighted_file_infos, visible_files_limit()) do %>
               <.file
                 id={"#{@id}-file-#{file_info.id}"}
                 file_info={file_info}
@@ -240,18 +252,7 @@ defmodule LivebookWeb.FileSelectComponent do
                 renamed_name={@renamed_name}
               />
             <% end %>
-            <div :for={file <- @uploads.folder.entries} class="flex items-center justify-between">
-              <span class="font-medium text-gray-400"><%= file.client_name %></span>
-              <button
-                type="button"
-                class="icon-button"
-                phx-click="clear-file"
-                phx-target={@myself}
-                tabindex="-1"
-              >
-                <.remix_icon icon="close-line" class="text-xl text-gray-300 hover:text-gray-500" />
-              </button>
-            </div>
+            <.more_files_indicator length={length(@unhighlighted_file_infos)} />
           </div>
         </form>
       </div>
@@ -289,17 +290,14 @@ defmodule LivebookWeb.FileSelectComponent do
     """
   end
 
-  defp any_highlighted?(file_infos) do
-    Enum.any?(file_infos, &(&1.highlighted != ""))
-  end
-
   defp file_system_menu_button(assigns) do
     ~H"""
     <.menu id={@id} disabled={@file_system_select_disabled} position={:bottom_left}>
       <:toggle>
-        <button
+        <.button
+          color="gray"
           type="button"
-          class="button-base button-gray pl-3 pr-2"
+          class="pl-3 pr-2"
           aria-label="switch file storage"
           disabled={@file_system_select_disabled}
         >
@@ -307,7 +305,7 @@ defmodule LivebookWeb.FileSelectComponent do
           <div class="pl-0.5 flex items-center">
             <.remix_icon icon="arrow-down-s-line" class="text-lg leading-none" />
           </div>
-        </button>
+        </.button>
       </:toggle>
       <%= for file_system <- @file_systems do %>
         <%= if file_system.id == @file.file_system_id do %>
@@ -447,6 +445,20 @@ defmodule LivebookWeb.FileSelectComponent do
     """
   end
 
+  defp more_files_indicator(assigns) do
+    ~H"""
+    <div
+      :if={@length > visible_files_limit()}
+      class="col-span-full text-sm text-medium text-gray-500 flex flex-col items-center gap-1"
+    >
+      <.remix_icon icon="more-line" class="text-lg" />
+      <%= @length - visible_files_limit() %> more files (search to see)
+    </div>
+    """
+  end
+
+  defp visible_files_limit(), do: 200
+
   defp js_show_new_item_section(js \\ %JS{}, id) do
     js
     |> JS.show(to: "##{id}")
@@ -501,14 +513,6 @@ defmodule LivebookWeb.FileSelectComponent do
       end
 
     send_event(socket, {:set_file, file, info})
-
-    {:noreply, socket}
-  end
-
-  def handle_event("submit", %{}, socket) do
-    if submit_event = socket.assigns.submit_event do
-      send_event(socket, submit_event)
-    end
 
     {:noreply, socket}
   end
@@ -619,7 +623,16 @@ defmodule LivebookWeb.FileSelectComponent do
         {current_file_infos, socket}
       end
 
-    assign(socket, :file_infos, annotate_matching(file_infos, prefix))
+    file_infos = annotate_matching(file_infos, prefix)
+
+    {unhighlighted_file_infos, highlighted_file_infos} =
+      Enum.split_with(file_infos, &(&1.highlighted == ""))
+
+    assign(socket,
+      file_infos: file_infos,
+      unhighlighted_file_infos: unhighlighted_file_infos,
+      highlighted_file_infos: highlighted_file_infos
+    )
   end
 
   defp annotate_matching(file_infos, prefix) do

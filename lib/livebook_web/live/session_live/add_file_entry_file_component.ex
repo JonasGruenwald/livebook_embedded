@@ -81,17 +81,16 @@ defmodule LivebookWeb.SessionLive.AddFileEntryFileComponent do
           />
         </div>
         <div class="mt-6 flex space-x-3">
-          <button
-            class="button-base button-blue"
+          <.button
             type="submit"
             disabled={not @changeset.valid? or not regular?(@file, @file_info) or @fetching}
           >
-            <.spinner :if={@fetching} class="mr-2" />
+            <.spinner :if={@fetching} class="mr-1" />
             <span>Add</span>
-          </button>
-          <.link patch={~p"/sessions/#{@session.id}"} class="button-base button-outlined-gray">
+          </.button>
+          <.button color="gray" outlined patch={~p"/sessions/#{@session.id}"}>
             Cancel
-          </.link>
+          </.button>
         </div>
       </.form>
     </div>
@@ -145,9 +144,7 @@ defmodule LivebookWeb.SessionLive.AddFileEntryFileComponent do
 
   defp add_file_entry(socket, file_entry) do
     Livebook.Session.add_file_entries(socket.assigns.session.pid, [file_entry])
-    # We can't do push_patch from update/2, so we ask the LV to do so
-    send(self(), {:push_patch, ~p"/sessions/#{socket.assigns.session.id}"})
-    socket
+    push_patch(socket, to: ~p"/sessions/#{socket.assigns.session.id}")
   end
 
   defp regular?(file, file_info) do
