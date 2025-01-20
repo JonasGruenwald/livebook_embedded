@@ -18,6 +18,7 @@ function buildEditorTheme(colors, { dark }) {
       "&": {
         color: colors.text,
         backgroundColor: colors.background,
+        borderRadius: "8px",
         fontSize: "14px",
         fontFamily: fonts.mono,
       },
@@ -28,6 +29,11 @@ function buildEditorTheme(colors, { dark }) {
 
       ".cm-scroller": {
         fontFamily: "inherit",
+        // We add padding directly to the scroll container, rather
+        // than the editor parent, so that there is additional space
+        // for the scrollbar when it appears. Without this padding,
+        // the scrollbar would overlap the editor content
+        padding: "0.75rem 0",
       },
 
       ".cm-content": {
@@ -38,17 +44,19 @@ function buildEditorTheme(colors, { dark }) {
       // Scroll
 
       "*": {
+        "&": {
+          scrollbarWidth: "thin",
+          scrollbarColor: `${colors.backgroundLightest} transparent`,
+        },
+
+        // Fallback for Safari, which does not implement scrollbar-*
+        // CSS properties yet
         "&::-webkit-scrollbar": {
           width: "8px",
           height: "8px",
         },
 
         "&::-webkit-scrollbar-thumb": {
-          borderRadius: "4px",
-          background: "transparent",
-        },
-
-        "&:hover::-webkit-scrollbar-thumb": {
           background: colors.backgroundLightest,
         },
 
@@ -124,7 +132,7 @@ function buildEditorTheme(colors, { dark }) {
       },
 
       ".cm-panels": {
-        backgroundColor: colors.background,
+        backgroundColor: "transparent",
         color: colors.text,
 
         "&.cm-panels-top": {
@@ -257,10 +265,32 @@ function buildEditorTheme(colors, { dark }) {
         maxWidth: "800px",
         maxHeight: "300px",
         overflowY: "auto",
-        padding: "8px",
         display: "flex",
         flexDirection: "column",
-        gap: "64px",
+
+        "& .cm-hoverDocsDefinitionLink": {
+          padding: "4px 8px",
+          cursor: "pointer",
+          fontSize: "0.875em",
+          fontFamily: fonts.sans,
+          opacity: 0.8,
+          borderBottom: `1px solid ${colors.separator}`,
+
+          "& i": {
+            marginRight: "2px",
+          },
+        },
+
+        "& .cm-hoverDocsContents": {
+          padding: "8px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "64px",
+        },
+      },
+
+      ".cm-hoverDocsSelection": {
+        backgroundColor: colors.selectionMatchBackground,
       },
 
       // Signature
@@ -317,7 +347,8 @@ function buildEditorTheme(colors, { dark }) {
         display: "flex",
         alignItems: "center",
         flexWrap: "wrap",
-        padding: "8px 8px 0 8px",
+        padding: "8px",
+        background: colors.background,
 
         "& br": {
           content: '" "',
@@ -328,12 +359,20 @@ function buildEditorTheme(colors, { dark }) {
         "& .cm-textfield": {
           borderRadius: "4px",
           border: `1px solid ${colors.border}`,
+
+          "&:focus": {
+            outline: "none",
+          },
         },
 
         "& .cm-button": {
           borderRadius: "4px",
           background: colors.backgroundLightest,
           border: "none",
+
+          "&:focus-visible": {
+            outline: `1px solid ${colors.text}`,
+          },
         },
 
         "& label:first-of-type": {
@@ -357,6 +396,10 @@ function buildEditorTheme(colors, { dark }) {
             backgroundImage: `url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3e%3c/svg%3e")`,
             backgroundColor: colors.backgroundLightest,
             borderColor: "transparent",
+          },
+
+          "&:focus-visible": {
+            outline: `1px solid ${colors.text}`,
           },
         },
 

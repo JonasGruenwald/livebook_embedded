@@ -1,5 +1,5 @@
 defmodule Livebook.Runtime.Definitions do
-  @kino_requirement "~> 0.13.0"
+  @kino_requirement "~> 0.14.0"
 
   def kino_requirement do
     @kino_requirement
@@ -17,7 +17,7 @@ defmodule Livebook.Runtime.Definitions do
 
   kino_db = %{
     name: "kino_db",
-    dependency: %{dep: {:kino_db, "~> 0.2.8"}, config: []}
+    dependency: %{dep: {:kino_db, "~> 0.2.10"}, config: []}
   }
 
   exqlite = %{
@@ -55,6 +55,16 @@ defmodule Livebook.Runtime.Definitions do
     dependency: %{dep: {:kino_explorer, "~> 0.1.20"}, config: []}
   }
 
+  kino_flame = %{
+    name: "kino_flame",
+    dependency: %{dep: {:kino_flame, "~> 0.1.5"}, config: []}
+  }
+
+  flame_k8s_backend = %{
+    name: "flame_k8s_backend",
+    dependency: %{dep: {:flame_k8s_backend, "~> 0.5"}, config: []}
+  }
+
   jason = %{
     name: "jason",
     dependency: %{dep: {:jason, "~> 1.4"}, config: []}
@@ -68,6 +78,11 @@ defmodule Livebook.Runtime.Definitions do
   xlsx_reader = %{
     name: "xlsx_reader",
     dependency: %{dep: {:xlsx_reader, "~> 0.8.5"}, config: []}
+  }
+
+  yaml_elixir = %{
+    name: "yaml_elixir",
+    dependency: %{dep: {:yaml_elixir, "~> 2.0"}, config: []}
   }
 
   windows? = match?({:win32, _}, :os.type())
@@ -85,6 +100,16 @@ defmodule Livebook.Runtime.Definitions do
             %{
               name: "req_athena",
               dependency: %{dep: {:req_athena, ">= 0.0.0"}, config: []}
+            }
+          ]
+        },
+        %{
+          name: "DuckDB",
+          packages: [
+            kino_db,
+            %{
+              name: "adbc",
+              dependency: %{dep: {:adbc, ">= 0.0.0"}, config: []}
             }
           ]
         },
@@ -200,6 +225,20 @@ defmodule Livebook.Runtime.Definitions do
         %{
           name: "Default",
           packages: [kino]
+        }
+      ]
+    },
+    %{
+      kind: "Elixir.KinoFLAME.RunnerCell",
+      name: "FLAME runner",
+      requirement_presets: [
+        %{
+          name: "Fly",
+          packages: [kino_flame]
+        },
+        %{
+          name: "Kubernetes",
+          packages: [kino_flame, flame_k8s_backend, yaml_elixir]
         }
       ]
     }

@@ -1,11 +1,7 @@
 import { parseHookProps } from "../lib/attribute";
 import Markdown from "../lib/markdown";
 import { globalPubsub } from "../lib/pubsub";
-import {
-  md5Base64,
-  smoothlyScrollToElement,
-  waitUntilInViewport,
-} from "../lib/utils";
+import { md5Base64, smoothlyScrollToElement, withStyle } from "../lib/utils";
 import scrollIntoView from "scroll-into-view-if-needed";
 import { isEvaluable } from "../lib/notebook";
 
@@ -159,6 +155,10 @@ const Cell = {
   handleCellEvent(event) {
     if (event.type === "dispatch_queue_evaluation") {
       this.handleDispatchQueueEvaluation(event.dispatch);
+    } else if (event.type === "jump_to_line") {
+      if (this.isFocused) {
+        this.currentEditor().moveCursorToLine(event.line, event.offset || 0);
+      }
     }
   },
 
@@ -210,8 +210,16 @@ const Cell = {
         // gives it focus
         if (!this.isFocused || !this.insertMode) {
           this.currentEditor().blur();
+        } else {
+          this.sendCursorHistory();
         }
       }, 0);
+    });
+
+    liveEditor.onSelectionChange(() => {
+      if (this.isFocused) {
+        this.sendCursorHistory();
+      }
     });
 
     if (tag === "primary") {
@@ -360,10 +368,24 @@ const Cell = {
   scrollEditorCursorIntoViewIfNeeded() {
     const element = this.currentEditor().getElementAtCursor();
 
-    scrollIntoView(element, {
-      scrollMode: "if-needed",
-      behavior: "smooth",
-      block: "center",
+    // Scroll to the cursor, positioning it near the top of the viewport
+    withStyle(element, { scrollMarginTop: "128px" }, () => {
+      scrollIntoView(element, {
+        scrollMode: "if-needed",
+        behavior: "instant",
+        block: "start",
+      });
+    });
+  },
+
+  sendCursorHistory() {
+    const cursor = this.currentEditor().getCurrentCursorPosition();
+    if (cursor === null) return;
+
+    globalPubsub.broadcast("history", {
+      ...cursor,
+      type: "navigation",
+      cellId: this.props.cellId,
     });
   },
 };

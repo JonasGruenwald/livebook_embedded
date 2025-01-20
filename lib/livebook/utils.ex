@@ -207,6 +207,11 @@ defmodule Livebook.Utils do
   @doc """
   Validates if the given URL is syntactically valid.
 
+  ## Options
+
+    * `:allow_file_scheme` - also accepts `file://` URLs. Defaults to
+      `flase`
+
   ## Examples
 
       iex> Livebook.Utils.valid_url?("not_a_url")
@@ -221,22 +226,39 @@ defmodule Livebook.Utils do
       iex> Livebook.Utils.valid_url?("http://")
       false
 
+      iex> Livebook.Utils.valid_url?("file:///tmp/test")
+      false
+
+      iex> Livebook.Utils.valid_url?("file:///tmp/test", allow_file_scheme: true)
+      true
+
   """
-  @spec valid_url?(String.t()) :: boolean()
-  def valid_url?(url) do
+  @spec valid_url?(String.t(), keyword()) :: boolean()
+  def valid_url?(url, opts \\ []) do
+    opts = Keyword.validate!(opts, allow_file_scheme: false)
+    allow_file_scheme = opts[:allow_file_scheme]
+
     case URI.new(url) do
-      {:ok, uri} -> uri.scheme != nil and uri.host not in [nil, ""]
-      {:error, _} -> false
+      {:ok, uri} when uri.scheme in ["http", "https"] ->
+        uri.host not in [nil, ""]
+
+      {:ok, uri} when allow_file_scheme and uri.scheme == "file" ->
+        String.starts_with?(url, "file://") and uri.path not in [nil, ""]
+
+      _ ->
+        false
     end
   end
 
   @doc """
   Validates a change is a valid URL.
+
+  See `valid_url?/2` for valid options.
   """
-  @spec validate_url(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
-  def validate_url(changeset, field) do
+  @spec validate_url(Ecto.Changeset.t(), atom(), keyword()) :: Ecto.Changeset.t()
+  def validate_url(changeset, field, opts \\ []) do
     Ecto.Changeset.validate_change(changeset, field, fn ^field, url ->
-      if valid_url?(url) do
+      if valid_url?(url, opts) do
         []
       else
         [{field, "must be a valid URL"}]
@@ -320,6 +342,8 @@ defmodule Livebook.Utils do
   @doc """
   Changes the first letter in the given string to lower case.
 
+  If the second letter is uppercase, the first letter case is kept.
+
   ## Examples
 
       iex> Livebook.Utils.downcase_first("Sippin tea")
@@ -328,6 +352,9 @@ defmodule Livebook.Utils do
       iex> Livebook.Utils.downcase_first("Short URL")
       "short URL"
 
+      iex> Livebook.Utils.downcase_first("URL invalid")
+      "URL invalid"
+
       iex> Livebook.Utils.downcase_first("")
       ""
 
@@ -335,7 +362,17 @@ defmodule Livebook.Utils do
   @spec downcase_first(String.t()) :: String.t()
   def downcase_first(string) do
     {first, rest} = String.split_at(string, 1)
-    String.downcase(first) <> rest
+
+    should_downcase? =
+      if second = String.at(rest, 0) do
+        second == String.downcase(second)
+      end
+
+    if should_downcase? do
+      String.downcase(first) <> rest
+    else
+      string
+    end
   end
 
   @doc """
@@ -651,10 +688,10 @@ defmodule Livebook.Utils do
       "1.2 MB"
 
       iex> Livebook.Utils.format_bytes(1_363_148_800)
-      "1.4 GB"
+      "1.3 GB"
 
       iex> Livebook.Utils.format_bytes(1_503_238_553_600)
-      "1.5 TB"
+      "1.4 TB"
 
   """
   @spec format_bytes(non_neg_integer()) :: String.t()
@@ -675,10 +712,10 @@ defmodule Livebook.Utils do
     "#{:erlang.float_to_binary(value, decimals: 1)} #{unit}"
   end
 
-  defp memory_unit(:TB), do: 1_000_000_000_000
-  defp memory_unit(:GB), do: 1_000_000_000
-  defp memory_unit(:MB), do: 1_000_000
-  defp memory_unit(:KB), do: 1_000
+  defp memory_unit(:TB), do: 1024 * 1024 * 1024 * 1024
+  defp memory_unit(:GB), do: 1024 * 1024 * 1024
+  defp memory_unit(:MB), do: 1024 * 1024
+  defp memory_unit(:KB), do: 1024
 
   @doc """
   Converts the given IP address into a valid hostname.

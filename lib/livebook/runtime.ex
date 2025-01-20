@@ -263,7 +263,7 @@ defprotocol Livebook.Runtime do
   @type grid_output :: %{
           type: :grid,
           outputs: list(t()),
-          columns: pos_integer(),
+          columns: pos_integer() | tuple(),
           gap: non_neg_integer(),
           boxed: boolean()
         }
@@ -454,6 +454,7 @@ defprotocol Livebook.Runtime do
             {:missing_secret, name :: String.t()}
             | {:interrupt, variant :: :normal | :error, message :: String.t()}
             | {:file_entry_forbidden, name :: String.t()}
+            | :dependencies
             | nil
         }
 
@@ -469,12 +470,15 @@ defprotocol Livebook.Runtime do
   dependencies between evaluations and avoids unnecessary reevaluations.
   """
   @type evaluation_response_metadata :: %{
+          interrupted: boolean(),
           errored: boolean(),
           evaluation_time_ms: non_neg_integer(),
           code_markers: list(code_marker()),
           memory_usage: runtime_memory(),
           identifiers_used: list(identifier :: term()) | :unknown,
-          identifiers_defined: %{(identifier :: term()) => version :: term()}
+          identifiers_defined: %{(identifier :: term()) => version :: term()},
+          identifier_definitions:
+            list(%{label: String.t(), file: String.t(), line: pos_integer()})
         }
 
   @typedoc """
@@ -549,7 +553,8 @@ defprotocol Livebook.Runtime do
             from: non_neg_integer(),
             to: non_neg_integer()
           },
-          contents: list(String.t())
+          contents: list(String.t()),
+          definition: %{file: String.t(), line: pos_integer()} | nil
         }
 
   @typedoc """
@@ -707,7 +712,8 @@ defprotocol Livebook.Runtime do
           language: String.t() | nil,
           placement: :bottom | :top,
           source: String.t(),
-          intellisense_node: {atom(), atom()} | nil
+          intellisense_node: {atom(), atom()} | nil,
+          visible: boolean()
         }
 
   @typedoc """
@@ -785,18 +791,38 @@ defprotocol Livebook.Runtime do
   def describe(runtime)
 
   @doc """
-  Synchronously initializes the given runtime.
+  Asynchronously initializes the given runtime.
 
-  This function starts the necessary resources and processes.
+  The initialization should take care of starting any OS processes
+  necessary, setting up resources and communication.
+
+  Since the initialization may take time, it should always happen in
+  a separate process. This function should return the `pid` of that
+  process. Once the initialization is finished, the process should
+  send the following message to the caller:
+
+    * `{:runtime_connect_done, pid, {:ok, runtime} | {:error, message}}`
+
+  The `runtime` should be the struct updated with all information
+  necessary for further communication.
+
+  In case the initialization is a particularly involved, the process
+  may send updates to the caller:
+
+      * `{:runtime_connect_info, pid, info}`
+
+  Where `info` is a few word text describing the current initialization
+  step.
+
+  If the caller decides to abort the initialization, they can forecefully
+  kill the process. The runtime resources should already be tolerant
+  to abrupt Livebook termination and autodestroy through monitoring
+  and timeouts. However, when the initialization process gets killed,
+  it may be desirable to eagerly remove the resources it has already
+  allocated, which can be achieved with an additional watcher process.
   """
-  @spec connect(t()) :: {:ok, t()} | {:error, String.t()}
+  @spec connect(t()) :: pid()
   def connect(runtime)
-
-  @doc """
-  Checks if the given runtime is in a connected state.
-  """
-  @spec connected?(t()) :: boolean()
-  def connected?(runtime)
 
   @doc """
   Sets the caller as the runtime owner.
@@ -824,13 +850,15 @@ defprotocol Livebook.Runtime do
   Synchronously disconnects the runtime and cleans up the underlying
   resources.
   """
-  @spec disconnect(t()) :: {:ok, t()}
+  @spec disconnect(t()) :: :ok
   def disconnect(runtime)
 
   @doc """
   Returns a fresh runtime of the same type with the same configuration.
 
-  Note that the runtime is in a stopped state.
+  This function is expected to only modify the runtime struct, unsetting
+  any information added by `connect/1`. It should not have any side
+  effects.
   """
   @spec duplicate(Runtime.t()) :: Runtime.t()
   def duplicate(runtime)
@@ -888,6 +916,9 @@ defprotocol Livebook.Runtime do
 
     * `:smart_cell_ref` - a reference of the smart cell which code is
       to be evaluated, if applicable
+
+    * `:disable_dependencies_cache` - disables dependencies cache, so
+      they are fetched and compiled from scratch
 
   """
   @spec evaluate_code(t(), atom(), String.t(), locator(), parent_locators(), keyword()) :: :ok
@@ -1007,7 +1038,7 @@ defprotocol Livebook.Runtime do
   The cell can also update some of the editor configuration or source
   by sending:
 
-    * `{:runtime_smart_cell_editor_update, ref, %{optional(:source) => String.t(), optional(:intellisense_node) => {atom(), atom()} | nil}}`
+    * `{:runtime_smart_cell_editor_update, ref, %{optional(:source) => String.t(), optional(:intellisense_node) => {atom(), atom()} | nil}, optional(:visible) => boolean()}`
 
   """
   @spec start_smart_cell(
@@ -1075,13 +1106,6 @@ defprotocol Livebook.Runtime do
   """
   @spec search_packages(t(), pid(), String.t()) :: reference()
   def search_packages(runtime, send_to, search)
-
-  @doc """
-  Disables dependencies cache, so they are fetched and compiled from
-  scratch.
-  """
-  @spec disable_dependencies_cache(t()) :: :ok
-  def disable_dependencies_cache(runtime)
 
   @doc """
   Sets the given environment variables.

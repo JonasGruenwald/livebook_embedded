@@ -633,12 +633,15 @@ defmodule Livebook.Hubs.TeamClientTest do
       notebook = %{
         Livebook.Notebook.new()
         | app_settings: %{Livebook.Notebook.AppSettings.new() | slug: slug},
+          file_entries: [%{type: :attachment, name: "image.jpg"}],
           name: title,
           hub_id: team.id,
           deployment_group_id: deployment_group_id
       }
 
       files_dir = Livebook.FileSystem.File.local(tmp_dir)
+      image_file = Livebook.FileSystem.File.resolve(files_dir, "image.jpg")
+      :ok = Livebook.FileSystem.File.write(image_file, "content")
 
       {:ok, %Livebook.Teams.AppDeployment{file: zip_content} = app_deployment} =
         Livebook.Teams.AppDeployment.new(notebook, files_dir)
@@ -663,10 +666,10 @@ defmodule Livebook.Hubs.TeamClientTest do
           version: Livebook.Utils.random_id(),
           file: nil,
           deployed_by: teams_app_deployment.app_revision.created_by.name,
-          deployed_at: teams_app_deployment.updated_at
+          deployed_at: DateTime.from_naive!(teams_app_deployment.updated_at, "Etc/UTC")
       }
 
-      {seconds, 0} = NaiveDateTime.to_gregorian_seconds(app_deployment.deployed_at)
+      {seconds, 0} = DateTime.to_gregorian_seconds(app_deployment.deployed_at)
 
       livebook_proto_app_deployment =
         %LivebookProto.AppDeployment{

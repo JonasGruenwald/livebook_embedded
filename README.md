@@ -40,11 +40,11 @@ pick the one that best fits your use case.
 
   * [Download the installer for Mac and Windows from our homepage](https://livebook.dev/#install)
 
-  * Latest stable builds: [Mac (Universal)](https://livebook.dev/releases/latest/LivebookInstall-latest-macos-universal.dmg),
-    [Windows](https://livebook.dev/releases/latest/LivebookInstall-latest-windows-x86_64.exe)
+  * Latest stable builds: [Mac (Universal)](https://github.com/livebook-dev/livebook/releases/latest/download/LivebookInstall-macos-universal.dmg),
+    [Windows](https://github.com/livebook-dev/livebook/releases/latest/download/LivebookInstall-windows-x86_64.exe)
 
-  * Nightly builds: [Mac (Universal)](https://livebook.dev/releases/nightly/LivebookInstall-nightly-macos-universal.dmg),
-    [Windows](https://livebook.dev/releases/nightly/LivebookInstall-nightly-windows-x86_64.exe)
+  * Nightly builds: [Mac (Universal)](https://github.com/livebook-dev/livebook/releases/download/nightly/LivebookInstall-macos-universal.dmg),
+    [Windows](https://github.com/livebook-dev/livebook/releases/download/nightly/LivebookInstall-windows-x86_64.exe)
 
   * Builds for particular Livebook version are available on our
     [GitHub releases](https://github.com/livebook-dev/livebook/releases).
@@ -77,7 +77,7 @@ To deploy Livebook on your cloud platform, see our [Docker Deployment](docs/depl
 For CUDA support, [see images with the "cuda" tag](https://github.com/livebook-dev/livebook/pkgs/container/livebook).
 
 To try out features from the main branch you can alternatively
-use the `ghcr.io/livebook-dev/livebook:edge` image.
+use the `ghcr.io/livebook-dev/livebook:nightly` image.
 See [Livebook images](https://github.com/livebook-dev/livebook/pkgs/container/livebook).
 
 ### Embedded devices
@@ -178,7 +178,7 @@ The following environment variables can be used to configure Livebook on boot:
     `LIVEBOOK_APPS_PATH_WARMUP`.
 
   * `LIVEBOOK_APPS_PATH_HUB_ID` - deploy only the notebooks in
-    `LIVEBOOK_APPS_PATH` that belong to the given Hub ID
+    `LIVEBOOK_APPS_PATH` that belong to the given workspace (known as HUB ID)
 
   * `LIVEBOOK_APPS_PATH_PASSWORD` - the password to use for all protected apps
     deployed from `LIVEBOOK_APPS_PATH`.
@@ -195,6 +195,11 @@ The following environment variables can be used to configure Livebook on boot:
 
   * `LIVEBOOK_BASE_URL_PATH` - sets the base url path the web application is
     served on. Useful when deploying behind a reverse proxy.
+
+  * `LIVEBOOK_PUBLIC_BASE_URL_PATH` - sets the base url path the `/public/*` routes
+    are served on. Note that this takes precedence over `LIVEBOOK_BASE_URL_PATH`,
+    if both are set. Setting this may be useful to create exceptions when deploying
+    behind a reverse proxy that requires au1thentication.
 
   * `LIVEBOOK_CACERTFILE` - path to a local file containing CA certificates.
     Those certificates are used during for server authentication when Livebook
@@ -217,11 +222,8 @@ The following environment variables can be used to configure Livebook on boot:
 
   * `LIVEBOOK_DEFAULT_RUNTIME` - sets the runtime type that is used by default
     when none is started explicitly for the given notebook. Must be either
-    "standalone" (Elixir standalone), "attached:NODE:COOKIE" (Attached node)
+    "standalone" (Standalone), "attached:NODE:COOKIE" (Attached node)
     or "embedded" (Embedded). Defaults to "standalone".
-
-  * `LIVEBOOK_EPMDLESS` - if set to "true", it disables the usage of EPMD. This is
-    only supported within releases and defaults to true for the Desktop app.
 
   * `LIVEBOOK_FIPS` - if set to "true", it enables the FIPS mode on startup.
     See more details in [the documentation](https://hexdocs.pm/livebook/fips.html).

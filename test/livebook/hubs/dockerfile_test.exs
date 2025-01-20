@@ -7,9 +7,9 @@ defmodule Livebook.Hubs.DockerfileTest do
   alias Livebook.Hubs
   alias Livebook.Secrets.Secret
 
-  @docker_tag if Livebook.Config.app_version() =~ "-dev",
-                do: "latest",
-                else: Livebook.Config.app_version()
+  @version if Livebook.Config.app_version() =~ "-dev",
+             do: "nightly",
+             else: Livebook.Config.app_version()
 
   describe "airgapped_dockerfile/7" do
     test "deploying a single notebook in personal hub" do
@@ -20,7 +20,7 @@ defmodule Livebook.Hubs.DockerfileTest do
       dockerfile = Dockerfile.airgapped_dockerfile(config, hub, [], [], file, [], %{})
 
       assert dockerfile == """
-             FROM ghcr.io/livebook-dev/livebook:#{@docker_tag}
+             FROM ghcr.io/livebook-dev/livebook:#{@version}
 
              # Apps configuration
              ENV LIVEBOOK_APPS_PATH "/apps"
@@ -97,7 +97,7 @@ defmodule Livebook.Hubs.DockerfileTest do
       dockerfile = Dockerfile.airgapped_dockerfile(config, hub, [], [], file, [], %{})
 
       assert dockerfile == """
-             FROM ghcr.io/livebook-dev/livebook:#{@docker_tag}
+             FROM ghcr.io/livebook-dev/livebook:#{@version}
 
              ARG TEAMS_KEY="lb_tk_fn0pL3YLWzPoPFWuHeV3kd0o7_SFuIOoU4C_k6OWDYg"
 
@@ -166,16 +166,14 @@ defmodule Livebook.Hubs.DockerfileTest do
     end
 
     test "deploying with different base image" do
-      config = dockerfile_config(%{docker_tag: "#{@docker_tag}-cuda11.8"})
+      config = dockerfile_config(%{docker_tag: "#{@version}-cuda12"})
       hub = personal_hub()
       file = Livebook.FileSystem.File.local(p("/notebook.livemd"))
 
       dockerfile = Dockerfile.airgapped_dockerfile(config, hub, [], [], file, [], %{})
 
       assert dockerfile =~ """
-             FROM ghcr.io/livebook-dev/livebook:#{@docker_tag}-cuda11.8
-
-             ENV XLA_TARGET "cuda118"
+             FROM ghcr.io/livebook-dev/livebook:#{@version}-cuda12
              """
     end
 
@@ -247,14 +245,13 @@ defmodule Livebook.Hubs.DockerfileTest do
     end
 
     test "deploying with different base image" do
-      config = dockerfile_config(%{docker_tag: "#{@docker_tag}-cuda11.8"})
+      config = dockerfile_config(%{docker_tag: "#{@version}-cuda12"})
       hub = team_hub()
       agent_key = Livebook.Factory.build(:agent_key)
 
-      %{image: image, env: env} = Dockerfile.online_docker_info(config, hub, agent_key)
+      %{image: image, env: _env} = Dockerfile.online_docker_info(config, hub, agent_key)
 
-      assert image == "ghcr.io/livebook-dev/livebook:#{@docker_tag}-cuda11.8"
-      assert {"XLA_TARGET", "cuda118"} in env
+      assert image == "ghcr.io/livebook-dev/livebook:#{@version}-cuda12"
     end
 
     test "deploying with auto cluster setup" do
@@ -388,7 +385,7 @@ defmodule Livebook.Hubs.DockerfileTest do
       app_settings = Livebook.Notebook.AppSettings.new()
 
       assert [warning] = Dockerfile.airgapped_warnings(config, hub, [], [], app_settings, [], %{})
-      assert warning =~ "The deployment is not configured for clustering"
+      assert warning =~ "Clustering has not been configured for this deployment"
 
       config = %{config | clustering: :auto}
 

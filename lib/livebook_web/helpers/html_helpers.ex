@@ -6,9 +6,18 @@ defmodule LivebookWeb.HTMLHelpers do
   @doc """
   Returns path to specific process dialog within LiveDashboard.
   """
+  @spec live_dashboard_process_path(pid) :: String.t()
   def live_dashboard_process_path(pid) do
     pid_str = Phoenix.LiveDashboard.PageBuilder.encode_pid(pid)
     ~p"/dashboard/#{node()}/processes?info=#{pid_str}"
+  end
+
+  @doc """
+  Returns path to specific node within LiveDashboard.
+  """
+  @spec live_dashboard_node_path(String.t()) :: String.t()
+  def live_dashboard_node_path(node) do
+    ~p"/dashboard/#{node}/home"
   end
 
   @doc """
@@ -64,7 +73,7 @@ defmodule LivebookWeb.HTMLHelpers do
   Formats the given UTC datetime relatively to present.
   """
   @spec format_datetime_relatively(DateTime.t() | NaiveDateTime.t()) :: String.t()
-  def format_datetime_relatively(%DateTime{} = date) do
+  def format_datetime_relatively(%DateTime{time_zone: "Etc/UTC"} = date) do
     date |> DateTime.to_naive() |> Livebook.Utils.Time.time_ago_in_words()
   end
 

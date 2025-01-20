@@ -49,9 +49,6 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
       to merge new values into when setting environment variables.
       Defaults to `System.get_env("PATH", "")`
 
-    * `:io_proxy_registry` - the registry to register IO proxy
-      processes in
-
   """
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
@@ -180,7 +177,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
             {:transfer, target_path, target_pid} ->
               try do
                 path
-                |> File.stream!(2048, [])
+                |> File.stream!(64_000, [])
                 |> Enum.each(fn chunk -> IO.binwrite(target_pid, chunk) end)
 
                 target_path
@@ -270,14 +267,6 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   end
 
   @doc """
-  Disables dependencies cache globally.
-  """
-  @spec disable_dependencies_cache(pid()) :: :ok
-  def disable_dependencies_cache(pid) do
-    GenServer.cast(pid, :disable_dependencies_cache)
-  end
-
-  @doc """
   Sets the given environment variables.
   """
   @spec put_system_envs(pid(), list({String.t(), String.t()})) :: :ok
@@ -341,12 +330,17 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   @spec stop(pid()) :: :ok
   def stop(pid) do
     GenServer.stop(pid)
+  catch
+    # Gracefully handle lost connection to a remote node
+    :exit, _ -> :ok
   end
 
   @impl true
   def init(opts) do
     Process.send_after(self(), :check_owner, @await_owner_timeout)
+
     :net_kernel.monitor_nodes(true, node_type: :all)
+
     schedule_memory_usage_report()
 
     {:ok, evaluator_supervisor} = ErlDist.EvaluatorSupervisor.start_link()
@@ -372,13 +366,11 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
        smart_cell_definitions_module:
          Keyword.get(opts, :smart_cell_definitions_module, Kino.SmartCell),
        extra_smart_cell_definitions: Keyword.get(opts, :extra_smart_cell_definitions, []),
-       connected_nodes: [],
        memory_timer_ref: nil,
        last_evaluator: nil,
        base_env_path:
          Keyword.get_lazy(opts, :base_env_path, fn -> System.get_env("PATH", "") end),
        ebin_path: Keyword.get(opts, :ebin_path),
-       io_proxy_registry: Keyword.get(opts, :io_proxy_registry),
        tmp_dir: Keyword.get(opts, :tmp_dir),
        mix_install_project_dir: nil
      }}
@@ -391,13 +383,8 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     if state.owner do
       {:noreply, state}
     else
-      {:stop, :no_owner, state}
+      {:stop, {:shutdown, :no_owner}, state}
     end
-  end
-
-  def handle_info({:nodedown, node, _metadata}, state) do
-    Livebook.Intellisense.clear_cache(node)
-    {:noreply, state}
   end
 
   def handle_info({:DOWN, _, :process, owner, _}, %{owner: owner} = state) do
@@ -415,7 +402,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   def handle_info({:evaluation_finished, locator}, state) do
     {:noreply,
      state
-     |> report_environment()
+     |> report_smart_cell_definitions()
      |> report_transient_state()
      |> scan_binding_after_evaluation(locator)}
   end
@@ -436,6 +423,12 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
       ErlDist.LoggerGLHandler.async_io(io_proxy, output)
     end
 
+    {:noreply, state}
+  end
+
+  def handle_info({message, _node, _info}, state)
+      when message in [:nodeup, :nodedown] and state.owner != nil do
+    report_connected_nodes(state)
     {:noreply, state}
   end
 
@@ -487,7 +480,9 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     Process.monitor(owner)
 
     state = %{state | owner: owner, runtime_broadcast_to: opts[:runtime_broadcast_to]}
-    state = report_environment(state)
+
+    state = report_smart_cell_definitions(state)
+    report_connected_nodes(state)
     report_memory_usage(state)
 
     {:ok, smart_cell_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
@@ -656,12 +651,6 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     {:noreply, state}
   end
 
-  def handle_cast(:disable_dependencies_cache, state) do
-    System.put_env("MIX_INSTALL_FORCE", "true")
-
-    {:noreply, state}
-  end
-
   def handle_cast({:put_system_envs, envs}, state) do
     envs
     |> Enum.map(fn
@@ -719,7 +708,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
 
   def handle_cast({:disconnect_node, node}, state) do
     Node.disconnect(node)
-    {:noreply, report_connected_nodes(state)}
+    {:noreply, state}
   end
 
   @impl true
@@ -799,8 +788,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
           object_tracker: state.object_tracker,
           client_tracker: state.client_tracker,
           ebin_path: state.ebin_path,
-          tmp_dir: evaluator_tmp_dir(state),
-          io_proxy_registry: state.io_proxy_registry
+          tmp_dir: evaluator_tmp_dir(state)
         )
 
       Process.monitor(evaluator.pid)
@@ -829,12 +817,6 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
     send(state.owner, {:runtime_memory_usage, Evaluator.memory()})
   end
 
-  defp report_environment(state) do
-    state
-    |> report_smart_cell_definitions()
-    |> report_connected_nodes()
-  end
-
   defp report_smart_cell_definitions(state) do
     smart_cell_definitions = get_smart_cell_definitions(state.smart_cell_definitions_module)
 
@@ -858,14 +840,7 @@ defmodule Livebook.Runtime.ErlDist.RuntimeServer do
   defp report_connected_nodes(state) do
     owner_node = node(state.owner)
     nodes = Node.list(:connected) |> List.delete(owner_node) |> Enum.sort()
-
-    if nodes == state.connected_nodes do
-      state
-    else
-      send(state.owner, {:runtime_connected_nodes, nodes})
-
-      %{state | connected_nodes: nodes}
-    end
+    send(state.owner, {:runtime_connected_nodes, nodes})
   end
 
   defp get_smart_cell_definitions(module) do

@@ -6,7 +6,6 @@ defmodule LivebookWeb.SessionLive.Render do
   import Livebook.Utils, only: [format_bytes: 1]
 
   alias Livebook.Notebook.Cell
-  alias Livebook.Runtime
 
   def render(assigns) do
     ~H"""
@@ -33,7 +32,7 @@ defmodule LivebookWeb.SessionLive.Render do
           dirty={@data_view.dirty}
           persistence_warnings={@data_view.persistence_warnings}
           autosave_interval_s={@data_view.autosave_interval_s}
-          runtime={@data_view.runtime}
+          runtime_status={@data_view.runtime_status}
           global_status={@data_view.global_status}
         />
         <.notebook_content
@@ -60,7 +59,12 @@ defmodule LivebookWeb.SessionLive.Render do
         module={LivebookWeb.SessionLive.RuntimeComponent}
         id="runtime-settings"
         session={@session}
+        return_to={@self_path}
         runtime={@data_view.runtime}
+        runtime_status={@data_view.runtime_status}
+        runtime_connect_info={@data_view.runtime_connect_info}
+        hub={@data_view.hub}
+        hub_secrets={@data_view.hub_secrets}
       />
     </.modal>
 
@@ -327,9 +331,9 @@ defmodule LivebookWeb.SessionLive.Render do
       <%!-- Local functionality --%>
 
       <.button_item
-        icon="booklet-fill"
-        label="Sections (ss)"
-        button_attrs={["data-el-sections-list-toggle": true]}
+        icon="node-tree"
+        label="Outline (so)"
+        button_attrs={["data-el-outline-toggle": true]}
       />
 
       <.button_item
@@ -358,7 +362,7 @@ defmodule LivebookWeb.SessionLive.Render do
 
       <.button_item
         icon="lock-password-line"
-        label="Secrets (se)"
+        label="Secrets (ss)"
         button_attrs={["data-el-secrets-list-toggle": true]}
       />
 
@@ -415,46 +419,34 @@ defmodule LivebookWeb.SessionLive.Render do
       class="flex flex-col h-full w-full max-w-xs absolute z-30 top-0 left-[64px] overflow-y-auto shadow-xl md:static md:shadow-none bg-gray-50 border-r border-gray-100 px-6 pt-16 md:py-8"
       data-el-side-panel
     >
-      <div class="flex grow" data-el-sections-list>
-        <.sections_list data_view={@data_view} />
-      </div>
-      <div data-el-clients-list>
-        <.clients_list data_view={@data_view} client_id={@client_id} />
-      </div>
-      <div data-el-files-list>
-        <.live_component
-          module={LivebookWeb.SessionLive.FilesListComponent}
-          id="files-list"
-          session={@session}
-          file_entries={@data_view.file_entries}
-          quarantine_file_entry_names={@data_view.quarantine_file_entry_names}
-        />
-      </div>
-      <div data-el-secrets-list>
-        <.live_component
-          module={LivebookWeb.SessionLive.SecretsListComponent}
-          id="secrets-list"
-          session={@session}
-          secrets={@data_view.secrets}
-          hub_secrets={@data_view.hub_secrets}
-          hub={@data_view.hub}
-        />
-      </div>
-      <div data-el-app-info>
-        <.live_component
-          module={LivebookWeb.SessionLive.AppInfoComponent}
-          id="app-info"
-          session={@session}
-          settings={@data_view.app_settings}
-          app={@app}
-          deployed_app_slug={@data_view.deployed_app_slug}
-          any_session_secrets?={@data_view.any_session_secrets?}
-          hub={@data_view.hub}
-        />
-      </div>
-      <div data-el-runtime-info>
-        <.runtime_info data_view={@data_view} session={@session} />
-      </div>
+      <.outline_list data_view={@data_view} />
+      <.clients_list data_view={@data_view} client_id={@client_id} />
+      <.live_component
+        module={LivebookWeb.SessionLive.FilesListComponent}
+        id="files-list"
+        session={@session}
+        file_entries={@data_view.file_entries}
+        quarantine_file_entry_names={@data_view.quarantine_file_entry_names}
+      />
+      <.live_component
+        module={LivebookWeb.SessionLive.SecretsListComponent}
+        id="secrets-list"
+        session={@session}
+        secrets={@data_view.secrets}
+        hub_secrets={@data_view.hub_secrets}
+        hub={@data_view.hub}
+      />
+      <.live_component
+        module={LivebookWeb.SessionLive.AppInfoComponent}
+        id="app-info"
+        session={@session}
+        settings={@data_view.app_settings}
+        app={@app}
+        deployed_app_slug={@data_view.deployed_app_slug}
+        any_session_secrets?={@data_view.any_session_secrets?}
+        hub={@data_view.hub}
+      />
+      <.runtime_info data_view={@data_view} session={@session} />
     </div>
     """
   end
@@ -493,25 +485,26 @@ defmodule LivebookWeb.SessionLive.Render do
     """
   end
 
-  defp sections_list(assigns) do
+  defp outline_list(assigns) do
     ~H"""
-    <div class="flex flex-col grow">
+    <div class="flex flex-col grow" data-el-outline>
       <h3 class="uppercase text-sm font-semibold text-gray-500">
-        Sections
+        Outline
       </h3>
       <div class="flex flex-col mt-4 space-y-4">
-        <div :for={section_item <- @data_view.sections_items} class="flex items-center">
-          <button
-            class="grow flex items-center text-gray-500 hover:text-gray-900 text-left"
-            data-el-sections-list-item
-            data-section-id={section_item.id}
-          >
-            <span class="flex items-center space-x-1">
+        <div :for={section_item <- @data_view.sections_items} class="flex flex-col">
+          <div class="flex justify-between items-center">
+            <button
+              class="grow flex items-baseline gap-1 text-gray-600 hover:text-gray-900 text-left"
+              data-el-outline-item
+              data-section-id={section_item.id}
+            >
+              <.remix_icon icon="h-2" class="text-lg font-normal leading-none opacity-50" />
               <span><%= section_item.name %></span>
               <%!--
-              Note: the container has overflow-y auto, so we cannot set overflow-x visible,
-              consequently we show the tooltip wrapped to a fixed number of characters
-              --%>
+                Note: the container has overflow-y auto, so we cannot set overflow-x visible,
+                consequently we show the tooltip wrapped to a fixed number of characters
+                --%>
               <span
                 :if={section_item.parent}
                 {branching_tooltip_attrs(section_item.name, section_item.parent.name)}
@@ -521,12 +514,29 @@ defmodule LivebookWeb.SessionLive.Render do
                   class="text-lg font-normal leading-none flip-horizontally"
                 />
               </span>
-            </span>
-          </button>
-          <.section_status
-            status={elem(section_item.status, 0)}
-            cell_id={elem(section_item.status, 1)}
-          />
+            </button>
+
+            <.section_status
+              status={elem(section_item.status, 0)}
+              cell_id={elem(section_item.status, 1)}
+            />
+          </div>
+
+          <ul :if={section_item.identifier_definitions != []} class="mt-2 ml-5 list-none items-center">
+            <li :for={definition <- section_item.identifier_definitions}>
+              <button
+                class="flex items-baseline max-w-full text-gray-600 hover:text-gray-900 text-sm gap-1"
+                data-el-outline-definition-item
+                data-file={definition.file}
+                data-line={definition.line}
+              >
+                <.remix_icon icon="braces-line" class="font-normal opacity-50" />
+                <span class="font-mono break-all text-left">
+                  <%= definition.label %>
+                </span>
+              </button>
+            </li>
+          </ul>
         </div>
       </div>
       <button
@@ -554,12 +564,12 @@ defmodule LivebookWeb.SessionLive.Render do
     wrapped_name = Livebook.Utils.wrap_line("”" <> parent_name <> "”", 16)
     label = "Branches from\n#{wrapped_name}"
 
-    [class: "tooltip #{direction}", data_tooltip: label]
+    [class: "tooltip #{direction}", "data-tooltip": label]
   end
 
   defp clients_list(assigns) do
     ~H"""
-    <div class="flex flex-col grow">
+    <div class="flex flex-col grow" data-el-clients-list>
       <div class="flex items-center justify-between space-x-4 -mt-1">
         <h3 class="uppercase text-sm font-semibold text-gray-500">
           Users
@@ -622,7 +632,7 @@ defmodule LivebookWeb.SessionLive.Render do
 
   defp runtime_info(assigns) do
     ~H"""
-    <div class="flex flex-col grow">
+    <div class="flex flex-col grow" data-el-runtime-info>
       <div class="flex items-center justify-between">
         <h3 class="uppercase text-sm font-semibold text-gray-500">
           Runtime
@@ -643,32 +653,29 @@ defmodule LivebookWeb.SessionLive.Render do
       </div>
       <div class="flex flex-col mt-2">
         <div class="flex flex-col space-y-3">
-          <.labeled_text
-            :for={{label, value} <- Runtime.describe(@data_view.runtime)}
-            label={label}
-            one_line
-          >
+          <.labeled_text :for={{label, value} <- @data_view.runtime_metadata} label={label} one_line>
             <%= value %>
           </.labeled_text>
         </div>
         <div class="mt-4 grid grid-cols-2 gap-2">
-          <%= if Runtime.connected?(@data_view.runtime) do %>
-            <.button phx-click="reconnect_runtime">
-              <.remix_icon icon="wireless-charging-line" />
-              <span>Reconnect</span>
-            </.button>
-          <% else %>
-            <.button phx-click="connect_runtime">
-              <.remix_icon icon="wireless-charging-line" />
-              <span>Connect</span>
-            </.button>
-          <% end %>
+          <.button :if={@data_view.runtime_status == :disconnected} phx-click="connect_runtime">
+            <.remix_icon icon="wireless-charging-line" />
+            <span>Connect</span>
+          </.button>
+          <.button :if={@data_view.runtime_status == :connecting} disabled>
+            <.remix_icon icon="wireless-charging-line" />
+            <span>Connecting...</span>
+          </.button>
+          <.button :if={@data_view.runtime_status == :connected} phx-click="reconnect_runtime">
+            <.remix_icon icon="wireless-charging-line" />
+            <span>Reconnect</span>
+          </.button>
           <.button color="gray" outlined patch={~p"/sessions/#{@session.id}/settings/runtime"}>
             Configure
           </.button>
 
           <.button
-            :if={Runtime.connected?(@data_view.runtime)}
+            :if={@data_view.runtime_status in [:connected, :connecting]}
             color="red"
             outlined
             type="button"
@@ -679,7 +686,19 @@ defmodule LivebookWeb.SessionLive.Render do
           </.button>
         </div>
 
-        <.memory_usage_info memory_usage={@session.memory_usage} />
+        <div :if={@data_view.runtime_connect_info} class="mt-4">
+          <.message_box kind={:info}>
+            <div class="flex items-center gap-2">
+              <.spinner />
+              <span>Step: <%= @data_view.runtime_connect_info %></span>
+            </div>
+          </.message_box>
+        </div>
+
+        <.memory_usage_info
+          memory_usage={@session.memory_usage}
+          runtime_metadata={@data_view.runtime_metadata}
+        />
 
         <.runtime_connected_nodes_info runtime_connected_nodes={@data_view.runtime_connected_nodes} />
       </div>
@@ -690,12 +709,19 @@ defmodule LivebookWeb.SessionLive.Render do
   defp memory_usage_info(assigns) do
     ~H"""
     <div class="mt-8 flex flex-col gap-2">
-      <div class="text-sm text-gray-800 flex flex-row justify-between">
-        <span class="text-gray-500 font-semibold uppercase">
+      <div class="flex items-center justify-between">
+        <div class="text-sm text-gray-500 font-semibold uppercase">
           Memory
-        </span>
-        <span :if={uses_memory?(@memory_usage)}>
-          <%= format_bytes(@memory_usage.system.free) %> available
+        </div>
+        <span class="tooltip left" data-tooltip="See on dashboard">
+          <.icon_button
+            :if={node = runtime_node(@runtime_metadata)}
+            href={LivebookWeb.HTMLHelpers.live_dashboard_node_path(node)}
+            target="_blank"
+            aria-label="see on dashboard"
+          >
+            <.remix_icon icon="dashboard-2-line" />
+          </.icon_button>
         </span>
       </div>
       <%= if uses_memory?(@memory_usage) do %>
@@ -709,6 +735,10 @@ defmodule LivebookWeb.SessionLive.Render do
       <% end %>
     </div>
     """
+  end
+
+  defp runtime_node(runtime_metadata) do
+    Enum.find_value(runtime_metadata, fn {key, value} -> key == "Node name" && value end)
   end
 
   defp runtime_memory_info(assigns) do
@@ -763,6 +793,9 @@ defmodule LivebookWeb.SessionLive.Render do
     <div class="mt-8 flex flex-col gap-2">
       <span class="text-sm text-gray-500 font-semibold uppercase">
         Connected nodes
+        <%= if @runtime_connected_nodes != [] do %>
+          (<%= length(@runtime_connected_nodes) %>)
+        <% end %>
       </span>
       <%= if @runtime_connected_nodes == [] do %>
         <div class="text-sm text-gray-800 flex flex-col">
@@ -1003,7 +1036,7 @@ defmodule LivebookWeb.SessionLive.Render do
             session_id={@session_id}
           />
           <.runtime_indicator
-            runtime={@runtime}
+            runtime_status={@runtime_status}
             global_status={@global_status}
             session_id={@session_id}
           />
@@ -1031,7 +1064,7 @@ defmodule LivebookWeb.SessionLive.Render do
             aria-label="choose views to activate"
             data-el-views-enabled
           >
-            <.remix_icon icon="layout-5-line" class="text-xl text-green-bright-400" />
+            <.remix_icon icon="layout-5-line" />
           </button>
         </:toggle>
         <.menu_item>
@@ -1133,9 +1166,7 @@ defmodule LivebookWeb.SessionLive.Render do
 
   defp runtime_indicator(assigns) do
     ~H"""
-    <%= if Livebook.Runtime.connected?(@runtime) do %>
-      <.global_status status={elem(@global_status, 0)} cell_id={elem(@global_status, 1)} />
-    <% else %>
+    <%= if @runtime_status == :disconnected do %>
       <span class="tooltip left" data-tooltip="Choose a runtime to run the notebook in">
         <.link
           patch={~p"/sessions/#{@session_id}/settings/runtime"}
@@ -1145,6 +1176,8 @@ defmodule LivebookWeb.SessionLive.Render do
           <.remix_icon icon="loader-3-line" />
         </.link>
       </span>
+    <% else %>
+      <.global_status status={elem(@global_status, 0)} cell_id={elem(@global_status, 1)} />
     <% end %>
     """
   end
@@ -1221,22 +1254,22 @@ defmodule LivebookWeb.SessionLive.Render do
 
   defp status_button_classes(color) do
     [
-      "text-xl leading-none p-1 flex items-center justify-center rounded-full rounded-full border-2",
+      "text-xl leading-none p-1 flex items-center justify-center rounded-full rounded-full border-2 focus-visible:outline-none",
       case color do
         :gray ->
-          "text-gray-400 border-gray-200 hover:bg-gray-100 focus:bg-gray-100"
+          "text-gray-400 border-gray-200 hover:bg-gray-100 focus-visible:bg-gray-100"
 
         :blue ->
-          "text-blue-500 border-blue-400 hover:bg-blue-50 focus:bg-blue-50"
+          "text-blue-500 border-blue-400 hover:bg-blue-50 focus-visible:bg-blue-50"
 
         :green ->
-          "text-green-bright-400 border-green-bright-300 hover:bg-green-bright-50 focus:bg-green-bright-50"
+          "text-green-bright-400 border-green-bright-300 hover:bg-green-bright-50 focus-visible:bg-green-bright-50"
 
         :yellow ->
-          "text-yellow-bright-300 border-yellow-bright-200 hover:bg-yellow-bright-50 focus:bg-yellow-bright-50"
+          "text-yellow-bright-300 border-yellow-bright-200 hover:bg-yellow-bright-50 focus-visible:bg-yellow-bright-50"
 
         :red ->
-          "text-red-400 border-red-300 hover:bg-red-50 focus:bg-red-50"
+          "text-red-400 border-red-300 hover:bg-red-50 focus-visible:bg-red-50"
       end
     ]
   end
@@ -1344,7 +1377,7 @@ defmodule LivebookWeb.SessionLive.Render do
           session_id={@session.id}
           session_pid={@session.pid}
           client_id={@client_id}
-          runtime={@data_view.runtime}
+          runtime_status={@data_view.runtime_status}
           smart_cell_definitions={@data_view.smart_cell_definitions}
           example_snippet_definitions={@data_view.example_snippet_definitions}
           installing?={@data_view.installing?}
@@ -1370,7 +1403,7 @@ defmodule LivebookWeb.SessionLive.Render do
 
   defp star_button(assigns) do
     ~H"""
-    <%= if @file in @starred_files do %>
+    <%= if starred?(@file, @starred_files) do %>
       <span class="tooltip left" data-tooltip="Unstar notebook">
         <.icon_button phx-click="unstar_notebook">
           <.remix_icon icon="star-fill" class="text-yellow-600" />
@@ -1384,5 +1417,9 @@ defmodule LivebookWeb.SessionLive.Render do
       </span>
     <% end %>
     """
+  end
+
+  defp starred?(file, starred_files) do
+    Enum.any?(starred_files, &Livebook.FileSystem.File.equal?(&1, file))
   end
 end

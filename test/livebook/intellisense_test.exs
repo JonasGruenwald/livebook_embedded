@@ -5,7 +5,7 @@ defmodule Livebook.IntellisenseTest do
 
   # Returns intellisense context resulting from evaluating
   # the given block of code in a fresh context.
-  defmacrop eval(do: block) do
+  defmacrop eval(ebin_path \\ System.tmp_dir!(), do: block) do
     quote do
       block = unquote(Macro.escape(block))
       binding = []
@@ -14,6 +14,7 @@ defmodule Livebook.IntellisenseTest do
 
       %{
         env: env,
+        ebin_path: unquote(ebin_path),
         map_binding: fn fun -> fun.(binding) end
       }
     end
@@ -248,16 +249,6 @@ defmodule Livebook.IntellisenseTest do
                  insert_text: "RuntimeError"
                }
              ] = Intellisense.get_completion_items("RuntimeE", context, node())
-    end
-
-    test "caches all loaded modules" do
-      context = eval(do: nil)
-      Intellisense.get_completion_items("Hub", context, node())
-
-      key = {Intellisense.IdentifierMatcher, node()}
-      assert [_ | _] = :persistent_term.get(key, :error)
-      Intellisense.IdentifierMatcher.clear_all_loaded(node())
-      assert :error = :persistent_term.get(key, :error)
     end
 
     test "Elixir struct completion lists nested options" do
@@ -998,11 +989,16 @@ defmodule Livebook.IntellisenseTest do
              ] = Intellisense.get_completion_items("^my_va", context, node())
     end
 
-    defmodule SublevelTest.LevelA.LevelB do
-    end
+    @tag :tmp_dir
+    test "Elixir completion sublevel", %{tmp_dir: tmp_dir} do
+      context =
+        eval tmp_dir do
+        end
 
-    test "Elixir completion sublevel" do
-      context = eval(do: nil)
+      compile_and_save_bytecode(tmp_dir, ~S'''
+      defmodule Livebook.IntellisenseTest.SublevelTest.LevelA.LevelB do
+      end
+      ''')
 
       assert [%{label: "LevelA"}] =
                Intellisense.get_completion_items(
@@ -1099,12 +1095,17 @@ defmodule Livebook.IntellisenseTest do
       :code.delete(Sample)
     end
 
-    defmodule MyStruct do
-      defstruct [:my_val]
-    end
+    @tag :tmp_dir
+    test "completion for struct names", %{tmp_dir: tmp_dir} do
+      context =
+        eval tmp_dir do
+        end
 
-    test "completion for struct names" do
-      context = eval(do: nil)
+      compile_and_save_bytecode(tmp_dir, ~S'''
+      defmodule Livebook.IntellisenseTest.MyStruct do
+        defstruct [:my_val]
+      end
+      ''')
 
       assert [
                %{label: "MyStruct"}
@@ -1116,9 +1117,16 @@ defmodule Livebook.IntellisenseTest do
                )
     end
 
-    test "completion for struct keys" do
+    @tag :tmp_dir
+    test "completion for struct keys", %{tmp_dir: tmp_dir} do
+      compile_and_save_bytecode(tmp_dir, ~S'''
+      defmodule Livebook.IntellisenseTest.MyStruct do
+        defstruct [:my_val]
+      end
+      ''')
+
       context =
-        eval do
+        eval tmp_dir do
           struct = %Livebook.IntellisenseTest.MyStruct{}
         end
 
@@ -1127,8 +1135,17 @@ defmodule Livebook.IntellisenseTest do
              ] = Intellisense.get_completion_items("struct.my", context, node())
     end
 
-    test "completion for struct keys inside struct" do
-      context = eval(do: nil)
+    @tag :tmp_dir
+    test "completion for struct keys inside struct", %{tmp_dir: tmp_dir} do
+      context =
+        eval tmp_dir do
+        end
+
+      compile_and_save_bytecode(tmp_dir, ~S'''
+      defmodule Livebook.IntellisenseTest.MyStruct do
+        defstruct [:my_val]
+      end
+      ''')
 
       assert [
                %{
@@ -1153,8 +1170,18 @@ defmodule Livebook.IntellisenseTest do
                )
     end
 
-    test "completion for struct keys inside struct removes filled keys" do
-      context = eval(do: nil)
+    @tag :tmp_dir
+    test "completion for struct keys inside struct removes filled keys",
+         %{tmp_dir: tmp_dir} do
+      context =
+        eval tmp_dir do
+        end
+
+      compile_and_save_bytecode(tmp_dir, ~S'''
+      defmodule Livebook.IntellisenseTest.MyStruct do
+        defstruct [:my_val]
+      end
+      ''')
 
       assert [] =
                Intellisense.get_completion_items(
@@ -1172,8 +1199,17 @@ defmodule Livebook.IntellisenseTest do
       refute Enum.find(completions, &match?(%{label: "__exception__"}, &1))
     end
 
-    test "completion for struct keys in update syntax" do
-      context = eval(do: nil)
+    @tag :tmp_dir
+    test "completion for struct keys in update syntax", %{tmp_dir: tmp_dir} do
+      context =
+        eval tmp_dir do
+        end
+
+      compile_and_save_bytecode(tmp_dir, ~S'''
+      defmodule Livebook.IntellisenseTest.MyStruct do
+        defstruct [:my_val]
+      end
+      ''')
 
       assert [
                %{
@@ -1580,6 +1616,60 @@ defmodule Livebook.IntellisenseTest do
 
       assert content =~ ~r"https://www.erlang.org/doc/man/string.html#uppercase-1"
     end
+
+    @tag :tmp_dir
+    test "includes definition location for runtime modules", %{tmp_dir: tmp_dir} do
+      Code.put_compiler_option(:debug_info, true)
+
+      context =
+        eval tmp_dir do
+          alias Livebook.IntellisenseTest.GoToDefinition
+        end
+
+      code = ~S'''
+      defmodule Livebook.IntellisenseTest.GoToDefinition do
+        @type t :: term()
+        @type foo :: foo(:bar)
+        @type foo(var) :: {var, t()}
+
+        defmacro with_logging(do: block) do
+          quote do
+            require Logger
+            Logger.debug("Running code")
+            result = unquote(block)
+            Logger.debug("Result: #{inspect(result)}")
+            result
+          end
+        end
+
+        @spec hello(var :: term()) :: foo(term())
+        def hello(message) do
+          {:bar, message}
+        end
+      end
+      '''
+
+      file = "#{__ENV__.file}#cell:#{Livebook.Utils.random_short_id()}"
+      compile_and_save_bytecode(tmp_dir, code, file)
+
+      assert %{definition: %{line: 1, file: ^file}} =
+               Intellisense.get_details("GoToDefinition", 14, context, node())
+
+      assert %{definition: %{line: 2, file: ^file}} =
+               Intellisense.get_details("GoToDefinition.t", 16, context, node())
+
+      # Currently we are fetching location of the lowest arity
+      assert %{definition: %{line: 3, file: ^file}} =
+               Intellisense.get_details("GoToDefinition.foo", 18, context, node())
+
+      assert %{definition: %{line: 6, file: ^file}} =
+               Intellisense.get_details("GoToDefinition.with_logging", 20, context, node())
+
+      assert %{definition: %{line: 17, file: ^file}} =
+               Intellisense.get_details("GoToDefinition.hello", 18, context, node())
+    after
+      Code.put_compiler_option(:debug_info, false)
+    end
   end
 
   describe "get_signature_items/3" do
@@ -1863,7 +1953,8 @@ defmodule Livebook.IntellisenseTest do
     # in the past we used :peer.start, but it was often failing on CI
     # (the start was timing out)
 
-    {:ok, runtime} = Livebook.Runtime.ElixirStandalone.new() |> Livebook.Runtime.connect()
+    pid = Livebook.Runtime.Standalone.new() |> Livebook.Runtime.connect()
+    assert_receive {:runtime_connect_done, ^pid, {:ok, runtime}}
 
     parent = self()
 
@@ -1890,18 +1981,17 @@ defmodule Livebook.IntellisenseTest do
             '''
 
           Livebook.Runtime.evaluate_code(runtime, :elixir, code, {:c1, :e1}, [])
-
           receive do: ({:runtime_evaluation_response, :e1, _, _} -> :ok)
           send(parent, :continue)
 
-          Process.sleep(:infinity)
+          receive do: (:done -> :ok)
         end
       })
 
     receive do: (:continue -> :ok)
 
     on_exit(fn ->
-      Process.exit(runtime_owner_pid, :kill)
+      send(runtime_owner_pid, :done)
     end)
 
     [node: runtime.node]
@@ -1934,7 +2024,13 @@ defmodule Livebook.IntellisenseTest do
       assert %{
                label: "hello/1",
                kind: :function,
-               documentation: "No documentation available",
+               documentation: """
+               No documentation available
+
+               ```
+               RemoteModule.hello(arg1)
+               ```\
+               """,
                insert_text: "hello(${})"
              } in Intellisense.get_completion_items("RemoteModule.hel", context, node)
     end
@@ -1947,7 +2043,13 @@ defmodule Livebook.IntellisenseTest do
                %{
                  label: "unsubscribe/1",
                  kind: :function,
-                 documentation: "No documentation available",
+                 documentation: """
+                 No documentation available
+
+                 ```
+                 :mnesia.unsubscribe(arg1)
+                 ```\
+                 """,
                  insert_text: "unsubscribe(${})"
                }
              ] = Intellisense.get_completion_items(":mnesia.unsub", context, node)
@@ -1959,5 +2061,19 @@ defmodule Livebook.IntellisenseTest do
       assert %{contents: [content]} = Intellisense.get_details("RemoteModule", 6, context, node)
       assert content =~ "No documentation available"
     end
+  end
+
+  defp compile_and_save_bytecode(dir, code, file \\ "nofile") do
+    [{module, bytecode}] = Code.compile_string(code, file)
+    path = Path.join(dir, "#{module}.beam")
+
+    File.write!(path, bytecode)
+    Code.prepend_path(dir)
+
+    on_exit(fn ->
+      Code.delete_path(dir)
+      :code.purge(module)
+      :code.delete(module)
+    end)
   end
 end

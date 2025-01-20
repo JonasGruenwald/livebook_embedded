@@ -134,26 +134,12 @@ defmodule LivebookWeb.SessionLiveTest do
       continue_fun.()
     end
 
-    test "reevaluting the setup cell", %{conn: conn, session: session} do
-      Session.subscribe(session.id)
-      evaluate_setup(session.pid)
-
-      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
-
-      view
-      |> element(~s{[data-el-session]})
-      |> render_hook("queue_cell_evaluation", %{"cell_id" => "setup"})
-
-      assert_receive {:operation, {:set_runtime, _pid, %{} = _runtime}}
-    end
-
     test "reevaluting the setup cell with dependencies cache disabled",
          %{conn: conn, session: session} do
       Session.subscribe(session.id)
 
-      # Start the standalone runtime, to encapsulate env var changes
-      {:ok, runtime} = Runtime.ElixirStandalone.new() |> Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      # Use the standalone runtime, to encapsulate env var changes
+      Session.set_runtime(session.pid, Runtime.Standalone.new())
 
       evaluate_setup(session.pid)
 
@@ -294,8 +280,9 @@ defmodule LivebookWeb.SessionLiveTest do
       :ok = FileSystem.File.write(image_file, "content")
       Session.add_file_entries(session.pid, [%{type: :attachment, name: "file.bin"}])
 
-      {:ok, runtime} = Livebook.Runtime.NoopRuntime.new() |> Livebook.Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      Session.subscribe(session.id)
+      Session.set_runtime(session.pid, Livebook.Runtime.NoopRuntime.new(self()))
+      connect_and_await_runtime(session.pid)
 
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
@@ -340,8 +327,9 @@ defmodule LivebookWeb.SessionLiveTest do
       :ok = FileSystem.File.write(image_file, "content")
       Session.add_file_entries(session.pid, [%{type: :attachment, name: "image.jpg"}])
 
-      {:ok, runtime} = Livebook.Runtime.NoopRuntime.new() |> Livebook.Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      Session.subscribe(session.id)
+      Session.set_runtime(session.pid, Livebook.Runtime.NoopRuntime.new(self()))
+      connect_and_await_runtime(session.pid)
 
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
@@ -370,8 +358,9 @@ defmodule LivebookWeb.SessionLiveTest do
       section_id = insert_section(session.pid)
       cell_id = insert_text_cell(session.pid, section_id, :code)
 
-      {:ok, runtime} = Livebook.Runtime.NoopRuntime.new() |> Livebook.Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      Session.subscribe(session.id)
+      Session.set_runtime(session.pid, Livebook.Runtime.NoopRuntime.new(self()))
+      connect_and_await_runtime(session.pid)
 
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
@@ -887,8 +876,8 @@ defmodule LivebookWeb.SessionLiveTest do
          %{conn: conn, session: session} do
       insert_section(session.pid)
 
-      {:ok, runtime} = Runtime.Embedded.new() |> Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      Session.subscribe(session.id)
+      connect_and_await_runtime(session.pid)
 
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
@@ -907,37 +896,39 @@ defmodule LivebookWeb.SessionLiveTest do
   end
 
   describe "runtime settings" do
-    test "connecting to elixir standalone updates connect button to reconnect",
+    test "connecting to standalone updates connect button to reconnect",
          %{conn: conn, session: session} do
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
 
       Session.subscribe(session.id)
 
       view
-      |> element("button", "Elixir standalone")
+      |> element("#runtime-settings-modal button", "Standalone")
       |> render_click()
 
-      [elixir_standalone_view] = live_children(view)
-
-      elixir_standalone_view
-      |> element("button", "Connect")
+      view
+      |> element("#runtime-settings-modal button", "Connect")
       |> render_click()
 
-      assert_receive {:operation, {:set_runtime, _pid, %Runtime.ElixirStandalone{} = runtime}}
+      assert_receive {:operation, {:set_runtime, _pid, %Runtime.Standalone{}}}
+      assert_receive {:operation, {:runtime_connected, _pid, %Runtime.Standalone{} = runtime}}
+
+      assert_patch(view, "/sessions/#{session.id}")
+      assert render(view) =~ Atom.to_string(runtime.node)
+
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
 
       page = render(view)
-      assert page =~ Atom.to_string(runtime.node)
       assert page =~ "Reconnect"
       assert page =~ "Disconnect"
     end
 
     test "disconnecting a connected node", %{conn: conn, session: session} do
-      {:ok, runtime} = Livebook.Runtime.NoopRuntime.new(self()) |> Livebook.Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      Session.subscribe(session.id)
+      Session.set_runtime(session.pid, Livebook.Runtime.NoopRuntime.new(self()))
+      connect_and_await_runtime(session.pid)
 
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
-
-      Session.subscribe(session.id)
 
       assert render(view) =~ "No connected nodes"
 
@@ -955,6 +946,526 @@ defmodule LivebookWeb.SessionLiveTest do
       |> render_click()
 
       assert_receive {:runtime_trace, :disconnect_node, [^node]}
+    end
+
+    test "configuring fly runtime", %{conn: conn, session: session} do
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
+
+      Session.subscribe(session.id)
+
+      view
+      |> element("#runtime-settings-modal button", "Fly.io machine")
+      |> render_click()
+
+      Livebook.FlyAPI.stub(fn conn when conn.method == "POST" ->
+        Req.Test.json(conn, %{
+          "data" => nil,
+          "errors" => [
+            %{
+              "extensions" => %{"code" => "UNAUTHORIZED"},
+              "locations" => [%{"column" => 3, "line" => 2}],
+              "message" => "You must be authenticated to view this.",
+              "path" => ["organizations"]
+            }
+          ]
+        })
+      end)
+
+      view
+      |> element(~s{form[phx-change="set_token"]})
+      |> render_change(%{token: "invalid"})
+
+      assert render_async(view) =~ "Error: could not authorize with the given token"
+
+      Livebook.FlyAPI.stub(fn conn when conn.method == "POST" ->
+        Req.Test.json(conn, %{
+          "data" => %{
+            "organizations" => %{
+              "nodes" => [
+                %{
+                  "id" => "1",
+                  "name" => "Grumpy Cat",
+                  "rawSlug" => "grumpy-cat",
+                  "slug" => "personal"
+                }
+              ]
+            },
+            "platform" => %{
+              "regions" => [
+                %{"code" => "ams", "name" => "Amsterdam, Netherlands"},
+                %{"code" => "fra", "name" => "Frankfurt, Germany"}
+              ],
+              "requestRegion" => "fra"
+            }
+          }
+        })
+      end)
+
+      view
+      |> element(~s{form[phx-change="set_token"]})
+      |> render_change(%{token: "valid"})
+
+      assert render_async(view) =~ "Grumpy Cat"
+
+      # Selects the closest region by default
+      assert view
+             |> element(~s/select[name="region"] option[value="fra"][selected]/)
+             |> has_element?()
+
+      Livebook.FlyAPI.stub(fn conn
+                              when conn.method == "GET" and
+                                     conn.path_info == ["v1", "apps", "new-app", "volumes"] ->
+        conn
+        |> Plug.Conn.put_status(404)
+        |> Req.Test.json(%{"error" => "App not found"})
+      end)
+
+      # Create a new app
+      view
+      |> element(~s{form[phx-change="set_app_name"]})
+      |> render_change(%{app_name: "new-app"})
+
+      assert render_async(view) =~ ~r/App .*new-app.* does not exist yet/
+
+      Livebook.FlyAPI.stub(fn conn
+                              when conn.method == "POST" and conn.path_info == ["v1", "apps"] ->
+        Plug.Conn.send_resp(conn, 201, "")
+      end)
+
+      view
+      |> element(~s/button[phx-click="create_app"]/)
+      |> render_click()
+
+      assert render_async(view) =~ "CPU kind"
+
+      # Create a new volume
+
+      Livebook.FlyAPI.stub(fn conn
+                              when conn.method == "POST" and
+                                     conn.path_info == ["v1", "apps", "new-app", "volumes"] ->
+        Req.Test.json(conn, %{
+          "id" => "vol_1",
+          "name" => "new_volume",
+          "region" => "ams",
+          "size_gb" => 1,
+          "state" => "created"
+        })
+      end)
+
+      view
+      |> element(~s/button[phx-click="new_volume"]/)
+      |> render_click()
+
+      view
+      |> element(~s/form[phx-submit="create_volume"]/)
+      |> render_submit(%{volume: %{name: "new_volume", size_gb: "1"}})
+
+      assert render_async(view) =~ "name: new_volume"
+
+      # The volume is automatically selected
+      assert view
+             |> element(~s/select[name="volume_id"] option[value="vol_1"][selected]/)
+             |> has_element?()
+
+      # Delete the volume
+
+      Livebook.FlyAPI.stub(fn conn
+                              when conn.method == "DELETE" and
+                                     conn.path_info == [
+                                       "v1",
+                                       "apps",
+                                       "new-app",
+                                       "volumes",
+                                       "vol_1"
+                                     ] ->
+        Req.Test.json(conn, %{})
+      end)
+
+      view
+      |> element(~s/button[phx-click="delete_volume"]/)
+      |> render_click()
+
+      view
+      |> element(~s/button[phx-click="confirm_delete_volume"]/)
+      |> render_click()
+
+      refute render_async(view) =~ "name: new_volume"
+
+      assert view
+             |> element(~s/select[name="volume_id"] option[value=""][selected]/)
+             |> has_element?()
+
+      # We do not actually connect the runtime. We test connecting
+      # againast the real API separately
+    end
+
+    test "populates fly runtime config form existing runtime", %{conn: conn, session: session} do
+      runtime =
+        Runtime.Fly.new(%{
+          token: "my-token",
+          app_name: "my-app",
+          region: "ams",
+          cpu_kind: "performance",
+          cpus: 1,
+          memory_gb: 1,
+          gpu_kind: nil,
+          gpus: nil,
+          volume_id: "vol_1",
+          docker_tag: "nightly"
+        })
+
+      Session.set_runtime(session.pid, runtime)
+
+      Livebook.FlyAPI.stub(fn
+        conn when conn.method == "POST" ->
+          Req.Test.json(conn, %{
+            "data" => %{
+              "organizations" => %{
+                "nodes" => [
+                  %{
+                    "id" => "1",
+                    "name" => "Grumpy Cat",
+                    "rawSlug" => "grumpy-cat",
+                    "slug" => "personal"
+                  }
+                ]
+              },
+              "platform" => %{
+                "regions" => [
+                  %{"code" => "ams", "name" => "Amsterdam, Netherlands"},
+                  %{"code" => "fra", "name" => "Frankfurt, Germany"}
+                ],
+                "requestRegion" => "fra"
+              }
+            }
+          })
+
+        conn
+        when conn.method == "GET" and
+               conn.path_info == ["v1", "apps", "my-app", "volumes"] ->
+          Req.Test.json(conn, [
+            %{
+              "id" => "vol_1",
+              "name" => "new_volume",
+              "region" => "ams",
+              "size_gb" => 1,
+              "state" => "created"
+            }
+          ])
+      end)
+
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
+
+      assert render_async(view) =~ "Grumpy Cat"
+
+      assert view
+             |> element(~s/select[name="region"] option[value="ams"][selected]/)
+             |> has_element?()
+
+      assert view
+             |> element(~s/select[name="volume_id"] option[value="vol_1"][selected]/)
+             |> has_element?()
+
+      assert view
+             |> element(~s/select[name="specs[cpu_kind]"] option[value="performance"][selected]/)
+             |> has_element?()
+    end
+
+    test "configuring k8s runtime", %{conn: conn, session: session} do
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
+
+      Session.subscribe(session.id)
+
+      Req.Test.stub(:k8s_cluster, Livebook.K8sClusterStub)
+
+      view
+      |> element("#runtime-settings-modal button", "Kubernetes Pod")
+      |> render_click()
+
+      # Check context switcher and switch to context with no permission
+
+      view
+      |> element(~s{form[phx-change="set_context"]})
+      |> render_change(%{context: "no-permission"})
+
+      rendered = render_async(view)
+
+      assert rendered =~ "Authenticated user has no permission to"
+      refute rendered =~ "You can fully customize"
+
+      # Test cluster with full access
+
+      view
+      |> element(~s{form[phx-change="set_context"]})
+      |> render_change(%{context: "default"})
+
+      render_async(view)
+
+      view
+      |> element(~s{form[phx-change="set_namespace"]})
+      |> render_change(%{namespace: "default"})
+
+      render_async(view)
+
+      assert view
+             |> element(~s{select[name="pvc_name"] option[value="foo-pvc"]})
+             |> has_element?()
+
+      assert view
+             |> element(~s{select[name="pvc_name"] option[value="new-pvc"]})
+             |> has_element?()
+
+      assert render_async(view) =~ "You can fully customize"
+
+      # Create new PVC
+
+      view
+      |> element(~s{button[phx-click="new_pvc"]})
+      |> render_click()
+
+      assert view
+             |> element(~s{form[phx-submit="create_pvc"]})
+             |> has_element?()
+
+      # Cancel button intermezzo
+
+      view
+      |> element(~s{button[phx-click="cancel_new_pvc"]})
+      |> render_click()
+
+      refute view
+             |> element(~s{form[phx-submit="create_pvc"]})
+             |> has_element?()
+
+      # Create new PVC again
+
+      view
+      |> element(~s{button[phx-click="new_pvc"]})
+      |> render_click()
+
+      assert view
+             |> element(
+               ~s{form[phx-submit="create_pvc"] select[name="pvc[storage_class]"] option[value="first-storage-class"]}
+             )
+             |> has_element?()
+
+      assert view
+             |> element(
+               ~s{form[phx-submit="create_pvc"] select[name="pvc[storage_class]"] option[value="second-storage-class"]}
+             )
+             |> has_element?()
+
+      assert view
+             |> element(~s{form[phx-submit="create_pvc"] button[type="submit"][disabled]})
+             |> has_element?()
+
+      view
+      |> element(~s{form[phx-submit="create_pvc"]})
+      |> render_change(%{pvc: %{name: "new-pvc", size_gb: 1}})
+
+      assert view
+             |> element(~s{form[phx-submit="create_pvc"] button[type="submit"]:not([disabled])})
+             |> has_element?()
+
+      Req.Test.expect(:k8s_cluster, Livebook.K8sClusterStub)
+
+      view
+      |> element(~s{form[phx-submit="create_pvc"]})
+      |> render_submit(%{pvc: %{name: "new-pvc", size_gb: 1}})
+
+      Req.Test.verify!()
+
+      # Delete a PVC
+
+      view
+      |> element(~s{button[phx-click="delete_pvc"]})
+      |> render_click()
+
+      assert render_async(view) =~
+               "Are you sure you want to irreversibly delete Persistent Volume Claim"
+
+      Req.Test.expect(:k8s_cluster, Livebook.K8sClusterStub)
+
+      view
+      |> element(~s{button[phx-click="confirm_delete_pvc"]})
+      |> render_click()
+
+      Req.Test.verify!()
+
+      # Pod Template Validation
+
+      refute render_async(view) =~ ~s/Make sure to define a valid resource of apiVersion /
+
+      view
+      |> element(~s{form[phx-change="set_pod_template"]})
+      |> render_change(%{pod_template: ""})
+
+      assert render_async(view) =~ ~s/Make sure to define a valid resource of apiVersion /
+
+      view
+      |> element(~s{form[phx-change="set_pod_template"]})
+      |> render_change(%{
+        pod_template: """
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          generateName: livebook-runtime-
+        spec:
+          containers:
+            - name: other-name
+        """
+      })
+
+      assert render_async(view) =~ ~s/Main container is missing./
+
+      # We do not actually connect the runtime. We test connecting againast the
+      # real API separately
+    end
+
+    test "populates k8s runtime config form existing runtime", %{conn: conn, session: session} do
+      pod_template = """
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        generateName: livebook-runtime-
+        labels:
+          livebook.dev/component: test
+      spec:
+        containers:
+          - name: livebook-runtime\
+      """
+
+      runtime =
+        Runtime.K8s.new(%{
+          context: "default",
+          namespace: "default",
+          pvc_name: "foo-pvc",
+          docker_tag: "nightly",
+          pod_template: pod_template
+        })
+
+      Req.Test.stub(:k8s_cluster, Livebook.K8sClusterStub)
+
+      Session.set_runtime(session.pid, runtime)
+
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
+
+      assert render_async(view) =~ "You can fully customize"
+
+      assert view
+             |> element(~s{select[name="pvc_name"] option[value="foo-pvc"][selected]})
+             |> has_element?()
+
+      assert view
+             |> element(~s{select[name="pvc_name"] option[value="new-pvc"]})
+             |> has_element?()
+
+      assert view
+             |> element(~s{button[phx-click="init"]:not([disabled])})
+             |> has_element?()
+    end
+
+    test "saving and loading config from secret", %{conn: conn, session: session} do
+      runtime =
+        Runtime.Fly.new(%{
+          token: "my-token",
+          app_name: "my-app",
+          region: "ams",
+          cpu_kind: "performance",
+          cpus: 1,
+          memory_gb: 1,
+          gpu_kind: nil,
+          gpus: nil,
+          volume_id: "vol_1",
+          docker_tag: "nightly"
+        })
+
+      Session.set_runtime(session.pid, runtime)
+
+      Livebook.FlyAPI.stub(fn
+        conn when conn.method == "POST" ->
+          Req.Test.json(conn, %{
+            "data" => %{
+              "organizations" => %{
+                "nodes" => [
+                  %{
+                    "id" => "1",
+                    "name" => "Grumpy Cat",
+                    "rawSlug" => "grumpy-cat",
+                    "slug" => "personal"
+                  }
+                ]
+              },
+              "platform" => %{
+                "regions" => [
+                  %{"code" => "ams", "name" => "Amsterdam, Netherlands"},
+                  %{"code" => "fra", "name" => "Frankfurt, Germany"}
+                ],
+                "requestRegion" => "fra"
+              }
+            }
+          })
+
+        conn
+        when conn.method == "GET" and
+               conn.path_info == ["v1", "apps", "my-app", "volumes"] ->
+          Req.Test.json(conn, [
+            %{
+              "id" => "vol_1",
+              "name" => "new_volume",
+              "region" => "ams",
+              "size_gb" => 1,
+              "state" => "created"
+            }
+          ])
+      end)
+
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
+
+      # The form is already filled with the runtime configuration, we
+      # just save it in a secret
+      view
+      |> element("button", "Save config")
+      |> render_click()
+
+      secret_name = "FLY_RUNTIME_#{System.unique_integer([:positive])}"
+
+      view
+      |> element(~s/form[phx-submit="save_config"]/)
+      |> render_submit(%{secret: %{name: secret_name}})
+
+      assert render_async(view) =~ "Load config"
+
+      # Set a different runtime, so there are no defaults
+      Session.set_runtime(session.pid, Runtime.Standalone.new())
+
+      # Open new runtime configuratino
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}/settings/runtime")
+
+      view
+      |> element("#runtime-settings-modal button", "Fly.io machine")
+      |> render_click()
+
+      refute render(view) =~ "CPU kind"
+
+      # Load the configuration from secret
+      view
+      |> element("#config-secret-menu-content button", secret_name)
+      |> render_click()
+
+      assert render_async(view) =~ "Grumpy Cat"
+
+      assert view
+             |> element(~s/select[name="region"] option[value="ams"][selected]/)
+             |> has_element?()
+
+      assert view
+             |> element(~s/select[name="volume_id"] option[value="vol_1"][selected]/)
+             |> has_element?()
+
+      assert view
+             |> element(~s/select[name="specs[cpu_kind]"] option[value="performance"][selected]/)
+             |> has_element?()
     end
   end
 
@@ -1057,8 +1568,8 @@ defmodule LivebookWeb.SessionLiveTest do
       section_id = insert_section(session.pid)
       cell_id = insert_text_cell(session.pid, section_id, :code, "Process.sleep(10)")
 
-      {:ok, runtime} = Runtime.Embedded.new() |> Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      Session.subscribe(session.id)
+      connect_and_await_runtime(session.pid)
 
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
@@ -1750,7 +2261,7 @@ defmodule LivebookWeb.SessionLiveTest do
   end
 
   describe "environment variables" do
-    test "outputs persisted env var from ets", %{conn: conn, session: session} do
+    test "outputs persisted env var from settings", %{conn: conn, session: session} do
       Session.subscribe(session.id)
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
@@ -1802,9 +2313,14 @@ defmodule LivebookWeb.SessionLiveTest do
     @tag :tmp_dir
     test "outputs persisted PATH delimited with os PATH env var",
          %{conn: conn, session: session, tmp_dir: tmp_dir} do
-      # Start the standalone runtime, to encapsulate env var changes
-      {:ok, runtime} = Runtime.ElixirStandalone.new() |> Runtime.connect()
-      Session.set_runtime(session.pid, runtime)
+      # Use the standalone runtime, to encapsulate env var changes
+      Session.set_runtime(session.pid, Runtime.Standalone.new())
+
+      # We start the runtime before adding the env var setting,
+      # otherwise a concurrent embedded runtime server could set PATH
+      # in this node and the standalone runtime would inherit it
+      Session.subscribe(session.id)
+      connect_and_await_runtime(session.pid)
 
       separator =
         case :os.type() do
@@ -1818,7 +2334,6 @@ defmodule LivebookWeb.SessionLiveTest do
       attrs = params_for(:env_var, name: "PATH", value: tmp_dir)
       Settings.set_env_var(attrs)
 
-      Session.subscribe(session.id)
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
       section_id = insert_section(session.pid)
@@ -2147,6 +2662,8 @@ defmodule LivebookWeb.SessionLiveTest do
 
       {:ok, session} = Sessions.create_session(notebook: notebook)
 
+      Session.subscribe(session.id)
+
       {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
       assert view
@@ -2158,6 +2675,8 @@ defmodule LivebookWeb.SessionLiveTest do
       |> render_click()
 
       render_confirm(view)
+
+      assert_receive {:operation, {:allow_file_entry, _client_id, "document.pdf"}}
 
       refute view
              |> element(~s/[data-el-files-list]/)
@@ -2315,5 +2834,43 @@ defmodule LivebookWeb.SessionLiveTest do
 
       assert File.read!(dockerfile_path) =~ "COPY notebook.livemd /apps"
     end
+  end
+
+  test "defined modules under sections", %{conn: conn, session: session} do
+    Code.put_compiler_option(:debug_info, true)
+
+    Session.subscribe(session.id)
+
+    {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
+    refute render(view) =~ "LivebookWeb.SessionLiveTest.Module1"
+    refute render(view) =~ "LivebookWeb.SessionLiveTest.Module2"
+
+    cell_id =
+      insert_text_cell(session.pid, insert_section(session.pid), :code, ~S'''
+      defmodule LivebookWeb.SessionLiveTest.Module1 do
+        def bar, do: :baz
+      end
+
+      defmodule LivebookWeb.SessionLiveTest.Module2 do
+        def bar, do: :baz
+      end
+      ''')
+
+    Session.queue_cell_evaluation(session.pid, cell_id)
+    assert_receive {:operation, {:add_cell_evaluation_response, _, ^cell_id, _, _}}
+
+    assert has_element?(
+             view,
+             ~s/[data-el-outline-definition-item][data-file="#cell:#{cell_id}"][data-line="1"]/,
+             "LivebookWeb.SessionLiveTest.Module1"
+           )
+
+    assert has_element?(
+             view,
+             ~s/[data-el-outline-definition-item][data-file="#cell:#{cell_id}"][data-line="5"]/,
+             "LivebookWeb.SessionLiveTest.Module2"
+           )
+  after
+    Code.put_compiler_option(:debug_info, false)
   end
 end

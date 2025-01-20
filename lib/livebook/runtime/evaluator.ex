@@ -8,10 +8,10 @@ defmodule Livebook.Runtime.Evaluator do
   #
   # Storing the binding in the same process that evaluates the code is
   # essential, because otherwise we would have to send it to another
-  # process, which means copying a potentially massive amounts of data.
+  # process, which means copying potentially massive amounts of data.
   #
   # Also, note that this process intentionally is not a GenServer,
-  # because during evaluation we it may receive arbitrary messages
+  # because during evaluation it may receive arbitrary messages
   # and we want to keep them in the inbox, whereas a GenServer would
   # always consume them.
 
@@ -63,7 +63,7 @@ defmodule Livebook.Runtime.Evaluator do
   # would take too much memory
   @evaluator_info_key :evaluator_info
 
-  # We stor the path in process dictionary, so that the tracer can access it
+  # We store the path in the process dictionary, so that the tracer can access it.
   @ebin_path_key :ebin_path
 
   @doc """
@@ -87,9 +87,6 @@ defmodule Livebook.Runtime.Evaluator do
 
     * `:tmp_dir` - a temporary directory for arbitrary use during
       evaluation
-
-    * `:io_proxy_registry` - the registry to register IO proxy
-      processes in
 
   """
   @spec start_link(keyword()) :: {:ok, pid(), t()} | {:error, term()}
@@ -186,17 +183,17 @@ defmodule Livebook.Runtime.Evaluator do
   @doc """
   Returns an empty intellisense context.
   """
-  @spec intellisense_context() :: Livebook.Intellisense.intellisense_context()
+  @spec intellisense_context() :: Livebook.Intellisense.context()
   def intellisense_context() do
     env = Code.env_for_eval([])
     map_binding = fn fun -> fun.([]) end
-    %{env: env, map_binding: map_binding}
+    %{env: env, ebin_path: ebin_path(), map_binding: map_binding}
   end
 
   @doc """
   Builds intellisense context from the given evaluation.
   """
-  @spec intellisense_context(t(), list(ref())) :: Livebook.Intellisense.intellisense_context()
+  @spec intellisense_context(t(), list(ref())) :: Livebook.Intellisense.context()
   def intellisense_context(evaluator, parent_refs) do
     {:dictionary, dictionary} = Process.info(evaluator.pid, :dictionary)
 
@@ -213,7 +210,11 @@ defmodule Livebook.Runtime.Evaluator do
 
     map_binding = fn fun -> map_binding(evaluator, parent_refs, fun) end
 
-    %{env: env, map_binding: map_binding}
+    %{
+      env: env,
+      ebin_path: find_in_dictionary(dictionary, @ebin_path_key),
+      map_binding: map_binding
+    }
   end
 
   defp find_in_dictionary(dictionary, key) do
@@ -273,7 +274,6 @@ defmodule Livebook.Runtime.Evaluator do
     client_tracker = Keyword.fetch!(opts, :client_tracker)
     ebin_path = Keyword.get(opts, :ebin_path)
     tmp_dir = Keyword.get(opts, :tmp_dir)
-    io_proxy_registry = Keyword.get(opts, :io_proxy_registry)
 
     {:ok, io_proxy} =
       Evaluator.IOProxy.start(%{
@@ -283,8 +283,7 @@ defmodule Livebook.Runtime.Evaluator do
         object_tracker: object_tracker,
         client_tracker: client_tracker,
         ebin_path: ebin_path,
-        tmp_dir: tmp_dir,
-        registry: io_proxy_registry
+        tmp_dir: tmp_dir
       })
 
     io_proxy_monitor = Process.monitor(io_proxy)
@@ -430,13 +429,17 @@ defmodule Livebook.Runtime.Evaluator do
 
     set_pdict(context, state.ignored_pdict_keys)
 
+    if opts[:disable_dependencies_cache] do
+      System.put_env("MIX_INSTALL_FORCE", "true")
+    end
+
     start_time = System.monotonic_time()
     {eval_result, code_markers} = eval(language, code, context.binding, context.env)
     evaluation_time_ms = time_diff_ms(start_time)
 
     %{tracer_info: tracer_info} = Evaluator.IOProxy.after_evaluation(state.io_proxy)
 
-    {new_context, result, identifiers_used, identifiers_defined} =
+    {new_context, result, identifiers_used, identifiers_defined, identifier_definitions} =
       case eval_result do
         {:ok, value, binding, env} ->
           context_id = random_long_id()
@@ -451,8 +454,10 @@ defmodule Livebook.Runtime.Evaluator do
           {identifiers_used, identifiers_defined} =
             identifier_dependencies(new_context, tracer_info, context)
 
+          identifier_definitions = definitions(new_context, tracer_info)
+
           result = {:ok, value}
-          {new_context, result, identifiers_used, identifiers_defined}
+          {new_context, result, identifiers_used, identifiers_defined, identifier_definitions}
 
         {:error, kind, error, stacktrace} ->
           for {module, _} <- tracer_info.modules_defined do
@@ -462,9 +467,22 @@ defmodule Livebook.Runtime.Evaluator do
           result = {:error, kind, error, stacktrace}
           identifiers_used = :unknown
           identifiers_defined = %{}
-          # Empty context
-          new_context = initial_context()
-          {new_context, result, identifiers_used, identifiers_defined}
+          identifier_definitions = []
+
+          # Mostly empty context, however we keep imports and process
+          # dictionary from the previous context, since these are not
+          # diffed
+          new_context = %{
+            id: random_long_id(),
+            binding: [],
+            env:
+              context.env
+              |> prune_env(%Evaluator.Tracer{})
+              |> Map.replace!(:versioned_vars, %{}),
+            pdict: context.pdict
+          }
+
+          {new_context, result, identifiers_used, identifiers_defined, identifier_definitions}
       end
 
     if ebin_path() do
@@ -472,7 +490,6 @@ defmodule Livebook.Runtime.Evaluator do
     end
 
     state = put_context(state, ref, new_context)
-
     output = Evaluator.Formatter.format_result(result, language)
 
     metadata = %{
@@ -482,7 +499,8 @@ defmodule Livebook.Runtime.Evaluator do
       memory_usage: memory(),
       code_markers: code_markers,
       identifiers_used: identifiers_used,
-      identifiers_defined: identifiers_defined
+      identifiers_defined: identifiers_defined,
+      identifier_definitions: identifier_definitions
     }
 
     send(state.send_to, {:runtime_evaluation_response, ref, output, metadata})
@@ -779,29 +797,10 @@ defmodule Livebook.Runtime.Evaluator do
   end
 
   defp make_snippet(code, location) do
-    start_line = 1
-    start_column = 1
-    line = :erl_anno.line(location)
-
-    case :erl_anno.column(location) do
-      :undefined ->
-        nil
-
-      column ->
-        lines = :string.split(code, "\n", :all)
-        snippet = :lists.nth(line - start_line + 1, lines)
-
-        offset =
-          if line == start_line do
-            column - start_column
-          else
-            column - 1
-          end
-
-        case :string.trim(code, :leading) do
-          [] -> nil
-          _ -> %{content: snippet, offset: offset}
-        end
+    if :erl_anno.column(location) != :undefined and :string.trim(code, :leading) != [] do
+      line = :erl_anno.line(location)
+      lines = :string.split(code, "\n", :all)
+      :lists.nth(line, lines)
     end
   end
 
@@ -887,7 +886,7 @@ defmodule Livebook.Runtime.Evaluator do
           into: identifiers_used
 
     identifiers_defined =
-      for {module, _vars} <- tracer_info.modules_defined,
+      for {module, _line_vars} <- tracer_info.modules_defined,
           version = module.__info__(:md5),
           do: {{:module, module}, version},
           into: identifiers_defined
@@ -965,7 +964,7 @@ defmodule Livebook.Runtime.Evaluator do
     # Note that :prune_binding removes variables used by modules
     # (unless used outside), so we get those from the tracer
     module_used_vars =
-      for {_module, vars} <- tracer_info.modules_defined,
+      for {_module, {_line, vars}} <- tracer_info.modules_defined,
           var <- vars,
           into: MapSet.new(),
           do: var
@@ -1034,5 +1033,17 @@ defmodule Livebook.Runtime.Evaluator do
 
   defp ebin_path() do
     Process.get(@ebin_path_key)
+  end
+
+  defp definitions(context, tracer_info) do
+    for {module, {line, _vars}} <- tracer_info.modules_defined,
+        do: %{label: module_name(module), file: context.env.file, line: line}
+  end
+
+  defp module_name(module) do
+    case Atom.to_string(module) do
+      "Elixir." <> name -> name
+      name -> name
+    end
   end
 end

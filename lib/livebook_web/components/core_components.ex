@@ -108,8 +108,6 @@ defmodule LivebookWeb.CoreComponents do
 
   slot :inner_block
 
-  def message_box(assigns)
-
   def message_box(assigns) do
     if assigns.message && assigns.inner_block != [] do
       raise ArgumentError, "expected either message or inner_block, got both."
@@ -195,14 +193,13 @@ defmodule LivebookWeb.CoreComponents do
         <.focus_wrap
           id={"#{@id}-content"}
           class={[
-            "relative max-h-full overflow-y-auto bg-white rounded-lg shadow-xl",
+            "relative max-h-full overflow-y-auto bg-white rounded-lg shadow-xl focus-visible:outline-none",
             "w-full p-6",
             modal_width_class(@width)
           ]}
           role="dialog"
           aria-modal="true"
           tabindex="0"
-          autofocus
           phx-window-keydown={JS.exec("data-cancel", to: "##{@id}")}
           phx-click-away={JS.exec("data-cancel", to: "##{@id}")}
           phx-key="escape"
@@ -238,6 +235,7 @@ defmodule LivebookWeb.CoreComponents do
   def show_modal(js \\ %JS{}, id) do
     js
     |> JS.show(to: "##{id}")
+    |> JS.dispatch("lb:focus", to: "##{id}-content")
     |> JS.transition(
       {"ease-out duration-200", "opacity-0", "opacity-100"},
       to: "##{id}-container"
@@ -457,7 +455,7 @@ defmodule LivebookWeb.CoreComponents do
     ~H"""
     <li class={[
       "w-full",
-      "[&>:first-child]:w-full [&>:first-child]:flex [&>:first-child]:space-x-3 [&>:first-child]:px-5 [&>:first-child]:py-2 [&>:first-child]:items-center [&>:first-child:hover]:bg-gray-100 [&>:first-child:focus]:bg-gray-100 [&>:first-child]:whitespace-nowrap font-medium",
+      "[&>:first-child]:w-full [&>:first-child]:flex [&>:first-child]:space-x-3 [&>:first-child]:px-5 [&>:first-child]:py-2 [&>:first-child]:items-center [&>:first-child:hover]:bg-gray-100 [&>:first-child:focus-visible]:bg-gray-100 [&>:first-child:focus-visible]:outline-none [&>:first-child]:whitespace-nowrap font-medium",
       menu_item_class(@variant),
       @disabled && "pointer-events-none opacity-50"
     ]}>
@@ -891,7 +889,7 @@ defmodule LivebookWeb.CoreComponents do
       else
         "px-5 py-2 font-medium text-sm"
       end,
-      "inline-flex rounded-lg border whitespace-nowrap items-center justify-center gap-1.5",
+      "inline-flex rounded-lg border whitespace-nowrap items-center justify-center gap-1.5 focus-visible:outline-none",
       if disabled do
         "cursor-default pointer-events-none border-transparent bg-gray-100 text-gray-400"
       else
@@ -963,7 +961,7 @@ defmodule LivebookWeb.CoreComponents do
       if disabled do
         "cursor-default text-gray-300"
       else
-        "text-gray-500 hover:text-gray-900 focus:bg-gray-100"
+        "text-gray-500 hover:text-gray-900 hover:bg-gray-50 focus-visible:bg-gray-100 focus-visible:outline-none"
       end
     ]
   end
@@ -1017,6 +1015,34 @@ defmodule LivebookWeb.CoreComponents do
       </div>
     </div>
     """
+  end
+
+  @doc """
+  Updates keys in a map assign.
+  """
+  def assign_nested(socket, key, keyword) do
+    update(socket, key, fn map ->
+      Enum.reduce(keyword, map, fn {key, value}, map -> Map.replace!(map, key, value) end)
+    end)
+  end
+
+  @doc """
+  Sends an event to the given target.
+
+  Given:
+
+    * a LV pid, sends the event as a regular message to the process
+
+    * a component `{module, id}` tuple, the event is sent as an update
+      with `:event` assign
+
+  """
+  def send_event(target, event) when is_pid(target) do
+    send(target, event)
+  end
+
+  def send_event({module, id}, event) when is_atom(module) and is_binary(id) do
+    Phoenix.LiveView.send_update(module, id: id, event: event)
   end
 
   # JS commands

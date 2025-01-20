@@ -18,6 +18,7 @@ import { leaveChannel } from "./js_view/channel";
 import { isDirectlyEditable, isEvaluable } from "../lib/notebook";
 import { settingsStore } from "../lib/settings";
 import { LiveStore } from "../lib/live_store";
+import CursorHistory from "./session/cursor_history";
 
 /**
  * A hook managing the whole session.
@@ -81,6 +82,7 @@ const Session = {
     this.viewOptions = null;
     this.keyBuffer = new KeyBuffer();
     this.lastLocationReportByClientId = {};
+    this.cursorHistory = new CursorHistory();
     this.followedClientId = null;
     this.store = LiveStore.create("session");
 
@@ -107,8 +109,8 @@ const Session = {
     document.addEventListener("focus", this._handleDocumentFocus, true);
     document.addEventListener("click", this._handleDocumentClick);
 
-    this.getElement("sections-list").addEventListener("click", (event) => {
-      this.handleSectionsListClick(event);
+    this.getElement("outline").addEventListener("click", (event) => {
+      this.handleOutlineClick(event);
       this.handleCellIndicatorsClick(event);
     });
 
@@ -116,8 +118,8 @@ const Session = {
       this.handleClientsListClick(event),
     );
 
-    this.getElement("sections-list-toggle").addEventListener("click", (event) =>
-      this.toggleSectionsList(),
+    this.getElement("outline-toggle").addEventListener("click", (event) =>
+      this.toggleOutline(),
     );
 
     this.getElement("clients-list-toggle").addEventListener("click", (event) =>
@@ -156,6 +158,13 @@ const Session = {
       "click",
       (event) => this.toggleCollapseAllSections(),
     );
+
+    this.subscriptions = [
+      globalPubsub.subscribe("jump_to_editor", ({ line, file }) =>
+        this.jumpToLine(file, line),
+      ),
+      globalPubsub.subscribe("history", this.handleHistoryEvent.bind(this)),
+    ];
 
     this.initializeDragAndDrop();
 
@@ -270,6 +279,7 @@ const Session = {
       leaveChannel();
     }
 
+    this.subscriptions.forEach((subscription) => subscription.destroy());
     this.store.destroy();
   },
 
@@ -297,6 +307,7 @@ const Session = {
     }
 
     const cmd = isMacOS() ? event.metaKey : event.ctrlKey;
+    const ctrl = event.ctrlKey;
     const alt = event.altKey;
     const shift = event.shiftKey;
     const key = event.key;
@@ -309,7 +320,16 @@ const Session = {
         event.target.closest(`[data-el-outputs-container]`)
       )
     ) {
-      if (cmd && shift && !alt && key === "Enter") {
+      // On macOS, ctrl+alt+- becomes an em-dash, so we check for the code
+      if (event.code === "Minus" && ctrl && alt) {
+        cancelEvent(event);
+        this.cursorHistoryGoBack();
+        return;
+      } else if (key === "=" && ctrl && alt) {
+        cancelEvent(event);
+        this.cursorHistoryGoForward();
+        return;
+      } else if (cmd && shift && !alt && key === "Enter") {
         cancelEvent(event);
         this.queueFullCellsEvaluation(true);
         return;
@@ -366,9 +386,9 @@ const Session = {
         }
       } else if (keyBuffer.tryMatch(["e", "s"])) {
         this.queueFocusedSectionEvaluation();
+      } else if (keyBuffer.tryMatch(["s", "o"])) {
+        this.toggleOutline();
       } else if (keyBuffer.tryMatch(["s", "s"])) {
-        this.toggleSectionsList();
-      } else if (keyBuffer.tryMatch(["s", "e"])) {
         this.toggleSecretsList();
       } else if (keyBuffer.tryMatch(["s", "a"])) {
         this.toggleAppInfo();
@@ -568,14 +588,26 @@ const Session = {
   },
 
   /**
-   * Handles section link clicks in the section list.
+   * Handles link clicks in the outline panel.
    */
-  handleSectionsListClick(event) {
-    const sectionButton = event.target.closest(`[data-el-sections-list-item]`);
+  handleOutlineClick(event) {
+    const sectionButton = event.target.closest(`[data-el-outline-item]`);
+
     if (sectionButton) {
       const sectionId = sectionButton.getAttribute("data-section-id");
       const section = this.getSectionById(sectionId);
-      section.scrollIntoView({ behavior: "smooth", block: "start" });
+      section.scrollIntoView({ behavior: "instant", block: "start" });
+    }
+
+    const sectionDefinitionButton = event.target.closest(
+      `[data-el-outline-definition-item]`,
+    );
+
+    if (sectionDefinitionButton) {
+      const file = sectionDefinitionButton.getAttribute("data-file");
+      const line = sectionDefinitionButton.getAttribute("data-line");
+
+      this.jumpToLine(file, line);
     }
   },
 
@@ -676,7 +708,7 @@ const Session = {
    */
   updateSectionListHighlight() {
     const currentListItem = this.el.querySelector(
-      `[data-el-sections-list-item][data-js-is-viewed]`,
+      `[data-el-outline-item][data-js-is-viewed]`,
     );
 
     if (currentListItem) {
@@ -695,7 +727,7 @@ const Session = {
     if (viewedSection) {
       const sectionId = viewedSection.getAttribute("data-section-id");
       const listItem = this.el.querySelector(
-        `[data-el-sections-list-item][data-section-id="${sectionId}"]`,
+        `[data-el-outline-item][data-section-id="${sectionId}"]`,
       );
       listItem.setAttribute("data-js-is-viewed", "");
     }
@@ -811,8 +843,8 @@ const Session = {
 
   // User action handlers (mostly keybindings)
 
-  toggleSectionsList(force = null) {
-    this.toggleSidePanelContent("sections-list", force);
+  toggleOutline(force = null) {
+    this.toggleSidePanelContent("outline", force);
   },
 
   toggleClientsList(force = null) {
@@ -1208,6 +1240,8 @@ const Session = {
   },
 
   handleCellDeleted(cellId, siblingCellId) {
+    this.cursorHistory.removeAllFromCell(cellId);
+
     if (this.focusedId === cellId) {
       if (this.view) {
         const visibleSiblingId = this.ensureVisibleFocusableEl(siblingCellId);
@@ -1302,6 +1336,12 @@ const Session = {
       ) {
         this.setFocusedEl(report.focusableId);
       }
+    }
+  },
+
+  handleHistoryEvent(event) {
+    if (event.type === "navigation") {
+      this.cursorHistory.push(event.cellId, event.line, event.offset);
     }
   },
 
@@ -1424,6 +1464,42 @@ const Session = {
 
   getElement(name) {
     return this.el.querySelector(`[data-el-${name}]`);
+  },
+
+  jumpToLine(file, line) {
+    const [_filename, cellId] = file.split("#cell:");
+    this.setFocusedEl(cellId, { scroll: false });
+    this.setInsertMode(true);
+
+    globalPubsub.broadcast(`cells:${cellId}`, { type: "jump_to_line", line });
+  },
+
+  cursorHistoryGoBack() {
+    if (this.cursorHistory.canGoBack()) {
+      const { cellId, line, offset } = this.cursorHistory.goBack();
+      this.setFocusedEl(cellId, { scroll: false });
+      this.setInsertMode(true);
+
+      globalPubsub.broadcast(`cells:${cellId}`, {
+        type: "jump_to_line",
+        line,
+        offset,
+      });
+    }
+  },
+
+  cursorHistoryGoForward() {
+    if (this.cursorHistory.canGoForward()) {
+      const { cellId, line, offset } = this.cursorHistory.goForward();
+      this.setFocusedEl(cellId, { scroll: false });
+      this.setInsertMode(true);
+
+      globalPubsub.broadcast(`cells:${cellId}`, {
+        type: "jump_to_line",
+        line,
+        offset,
+      });
+    }
   },
 };
 

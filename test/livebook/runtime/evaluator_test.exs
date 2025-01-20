@@ -259,9 +259,8 @@ defmodule Livebook.Runtime.EvaluatorTest do
                       }}
     end
 
-    test "returns additional metadata when there is a module compilation error", %{
-      evaluator: evaluator
-    } do
+    test "returns additional metadata when there is a module compilation error",
+         %{evaluator: evaluator} do
       code = """
       defmodule Livebook.Runtime.EvaluatorTest.Invalid do
         x
@@ -503,6 +502,50 @@ defmodule Livebook.Runtime.EvaluatorTest do
       assert_receive {:DOWN, ^ref, :process, ^gl, _reason}
 
       refute Code.ensure_loaded?(Livebook.Runtime.EvaluatorTest.Exited)
+    end
+
+    @tag :with_ebin_path
+    test "returns identifier definitions", %{evaluator: evaluator} do
+      Code.put_compiler_option(:debug_info, true)
+
+      code = ~S'''
+      defmodule Livebook.Runtime.EvaluatorTest.ModuleDef1 do
+        def fun(), do: :ok
+      end
+
+      defmodule Livebook.Runtime.EvaluatorTest.ModuleDef2 do
+        defmodule Foo do
+          defstruct [:name]
+        end
+      end
+      '''
+
+      file = "file.livemd#cell_id:123456789"
+
+      Evaluator.evaluate_code(evaluator, :elixir, code, :code_1, [], file: file)
+
+      assert_receive {:runtime_evaluation_response, :code_1, terminal_text(_),
+                      metadata() = metadata}
+
+      assert metadata.identifier_definitions == [
+               %{
+                 label: "Livebook.Runtime.EvaluatorTest.ModuleDef1",
+                 line: 1,
+                 file: file
+               },
+               %{
+                 label: "Livebook.Runtime.EvaluatorTest.ModuleDef2",
+                 line: 5,
+                 file: file
+               },
+               %{
+                 label: "Livebook.Runtime.EvaluatorTest.ModuleDef2.Foo",
+                 line: 6,
+                 file: file
+               }
+             ]
+    after
+      Code.put_compiler_option(:debug_info, false)
     end
   end
 
@@ -768,7 +811,7 @@ defmodule Livebook.Runtime.EvaluatorTest do
       ref = eval_idx
       parent_refs = Enum.to_list((eval_idx - 1)..0//-1)
       Evaluator.evaluate_code(evaluator, :elixir, code, ref, parent_refs)
-      assert_receive {:runtime_evaluation_response, ^ref, terminal_text(_), metadata}
+      assert_receive {:runtime_evaluation_response, ^ref, _output, metadata}
       %{used: metadata.identifiers_used, defined: metadata.identifiers_defined}
     end
 
@@ -1148,6 +1191,94 @@ defmodule Livebook.Runtime.EvaluatorTest do
 
       assert context.pdict == %{x: 1, y: 2}
     end
+
+    test "context merging with errored evaluation", %{evaluator: evaluator} do
+      # This test is similar to the above, but the second evaluation
+      # fails with an error
+
+      """
+      x = 1
+      y = 1
+
+      alias Enum, as: E
+      alias Map, as: M
+
+      require Enum
+
+      import Integer, only: [is_odd: 1, is_even: 1, to_string: 2, to_charlist: 2]
+
+      Process.put(:x, 1)
+      Process.put(:y, 1)
+      Process.put(:z, 1)
+
+      defmodule Livebook.Runtime.EvaluatorTest.Identifiers.ErrorContextMergingOne do
+      end
+      """
+      |> eval(evaluator, 0)
+
+      """
+      y = 2
+
+      alias MapSet, as: M
+
+      require Map
+
+      import Integer, except: [is_even: 1, to_string: 2]
+
+      Process.put(:y, 2)
+      Process.delete(:z)
+
+      defmodule Livebook.Runtime.EvaluatorTest.Identifiers.ErrorContextMergingTwo do
+      end
+
+      raise "oops"
+      """
+      |> eval(evaluator, 1)
+
+      # Evaluation 1 context
+      #
+      # Should be empty, except for imports and process dictionary,
+      # which are not diffed and should be kept from evaluation 0.
+
+      context = Evaluator.get_evaluation_context(evaluator, [1])
+
+      assert Enum.sort(context.binding) == []
+
+      assert Enum.sort(context.env.aliases) == []
+
+      assert Map not in context.env.requires
+      assert Enum not in context.env.requires
+
+      assert [_, _ | _] = context.env.functions[Integer]
+      assert [_, _ | _] = context.env.macros[Integer]
+
+      assert context.env.versioned_vars == %{}
+
+      assert context.env.context_modules == []
+
+      assert context.pdict == %{x: 1, y: 1, z: 1}
+
+      # Merged context
+
+      context = Evaluator.get_evaluation_context(evaluator, [1, 0])
+
+      assert Enum.sort(context.binding) == [x: 1, y: 1]
+
+      assert Enum.sort(context.env.aliases) == [{E, Enum}, {M, Map}]
+
+      assert Enum in context.env.requires
+
+      assert [_, _ | _] = context.env.functions[Integer]
+      assert [_, _ | _] = context.env.macros[Integer]
+
+      assert context.env.versioned_vars == %{{:x, nil} => 0, {:y, nil} => 1}
+
+      assert context.env.context_modules == [
+               Livebook.Runtime.EvaluatorTest.Identifiers.ErrorContextMergingOne
+             ]
+
+      assert context.pdict == %{x: 1, y: 1, z: 1}
+    end
   end
 
   describe "forget_evaluation/2" do
@@ -1330,22 +1461,56 @@ defmodule Livebook.Runtime.EvaluatorTest do
       # Incomplete input
       Evaluator.evaluate_code(evaluator, :erlang, "X =", :code_1, [])
       assert_receive {:runtime_evaluation_response, :code_1, error(message), metadata()}
-      assert "\e[31m** (TokenMissingError)" <> _ = message
+
+      assert clean_message(message) === """
+             ** (TokenMissingError) token missing on nofile:1:4:
+                 error: syntax error before:
+                 │
+               1 │ X =
+                 │    ^
+                 │
+                 └─ nofile:1:4\
+             """
 
       # Parser error
       Evaluator.evaluate_code(evaluator, :erlang, "X ==/== a.", :code_2, [])
       assert_receive {:runtime_evaluation_response, :code_2, error(message), metadata()}
-      assert "\e[31m** (SyntaxError)" <> _ = message
+
+      assert clean_message(message) === """
+             ** (SyntaxError) invalid syntax found on nofile:1:5:
+                 error: syntax error before: /=
+                 │
+               1 │ X ==/== a.
+                 │     ^
+                 │
+                 └─ nofile:1:5\
+             """
 
       # Tokenizer error
       Evaluator.evaluate_code(evaluator, :erlang, "$a$", :code_3, [])
       assert_receive {:runtime_evaluation_response, :code_3, error(message), metadata()}
-      assert "\e[31m** (SyntaxError)" <> _ = message
+
+      assert clean_message(message) === """
+             ** (SyntaxError) invalid syntax found on nofile:1:3:
+                 error: unterminated character
+                 │
+               1 │ $a$
+                 │   ^
+                 │
+                 └─ nofile:1:3\
+             """
 
       # Erlang exception
       Evaluator.evaluate_code(evaluator, :erlang, "list_to_binary(1).", :code_4, [])
       assert_receive {:runtime_evaluation_response, :code_4, error(message), metadata()}
-      assert "\e[31mexception error: bad argument" <> _ = message
+
+      assert clean_message(message) === """
+             exception error: bad argument
+               in function  list_to_binary/1
+                  called as list_to_binary(1)
+                  *** argument 1: not an iolist term
+               in call from erl_eval:do_apply/7 (erl_eval.erl, line 900)\
+             """
     end
   end
 

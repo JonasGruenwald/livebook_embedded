@@ -60,12 +60,12 @@ defmodule Livebook.Config do
           })
   def docker_images() do
     version = app_version()
-    base = if version =~ "dev", do: "latest", else: version
+
+    version = if version =~ "dev", do: "nightly", else: version
 
     [
-      %{tag: base, name: "Livebook", env: []},
-      %{tag: "#{base}-cuda11.8", name: "Livebook + CUDA 11.8", env: [{"XLA_TARGET", "cuda118"}]},
-      %{tag: "#{base}-cuda12.1", name: "Livebook + CUDA 12.1", env: [{"XLA_TARGET", "cuda120"}]}
+      %{tag: version, name: "Livebook", env: []},
+      %{tag: "#{version}-cuda12", name: "Livebook + CUDA 12", env: []}
     ]
   end
 
@@ -158,7 +158,7 @@ defmodule Livebook.Config do
   @spec tmp_path() :: String.t()
   def tmp_path() do
     tmp_dir = System.tmp_dir!() |> Path.expand()
-    Path.join(tmp_dir, "livebook")
+    Path.join([tmp_dir, "livebook", app_version()])
   end
 
   @doc """
@@ -201,15 +201,6 @@ defmodule Livebook.Config do
   @spec port() :: pos_integer() | 0
   def port() do
     Application.get_env(:livebook, LivebookWeb.Endpoint)[:http][:port]
-  end
-
-  @doc """
-  Returns the base url path for the Livebook endpoint.
-  """
-  @spec base_url_path() :: String.t()
-  def base_url_path() do
-    path = Application.get_env(:livebook, LivebookWeb.Endpoint)[:url][:path]
-    String.trim_trailing(path, "/")
   end
 
   @doc """
@@ -354,13 +345,6 @@ defmodule Livebook.Config do
   end
 
   @doc """
-  Returns a boolean if epmdless mode is configured.
-  """
-  def epmdless? do
-    Application.fetch_env!(:livebook, :epmdless)
-  end
-
-  @doc """
   Returns the force ssl host if any.
   """
   def force_ssl_host do
@@ -377,6 +361,7 @@ defmodule Livebook.Config do
   @doc """
   Returns the application cacertfile if any.
   """
+  # TODO: Remove env var once support is added either to Erlang/OTP 28 or Elixir v1.18
   @spec cacertfile() :: String.t() | nil
   def cacertfile() do
     Application.get_env(:livebook, :cacertfile)
@@ -436,6 +421,22 @@ defmodule Livebook.Config do
   Returns the current version of running Livebook.
   """
   def app_version(), do: @app_version
+
+  @app? Mix.target() == :app
+
+  @doc """
+  Returns whether running at the desktop app.
+  """
+  @spec app?() :: boolean()
+  def app?(), do: @app?
+
+  @doc """
+  Returns the GitHub org/repo where the releases are created.
+  """
+  @spec github_release_info() :: %{repo: String.t(), version: String.t()}
+  def github_release_info() do
+    Application.get_env(:livebook, :github_release_info)
+  end
 
   @doc """
   Aborts booting due to a configuration error.
@@ -673,7 +674,7 @@ defmodule Livebook.Config do
         nil
 
       "standalone" ->
-        Livebook.Runtime.ElixirStandalone.new()
+        Livebook.Runtime.Standalone.new()
 
       "embedded" ->
         Livebook.Runtime.Embedded.new()

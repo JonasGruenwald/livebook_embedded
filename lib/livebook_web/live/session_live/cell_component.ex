@@ -230,6 +230,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
                 language={@cell_view.editor.language}
                 rounded={@cell_view.editor.placement}
                 intellisense={@cell_view.editor.language == "elixir"}
+                hidden={not @cell_view.editor.visible}
               />
             </div>
           <% :dead -> %>
@@ -315,7 +316,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
     ~H"""
     <!-- By setting tabindex we can programmatically focus this element,
          also we actually want to make this element tab-focusable -->
-    <div class="flex relative" data-el-cell-body tabindex="0">
+    <div class="flex relative focus-visible:outline-none" data-el-cell-body tabindex="0">
       <div class="w-1 h-full rounded-lg absolute top-0 -left-3" data-el-cell-focus-indicator></div>
       <div class="w-full">
         <%= render_slot(@inner_block) %>
@@ -328,7 +329,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
     ~H"""
     <div class="flex items-center space-x-1">
       <button
-        class="text-gray-600 hover:text-gray-800 focus:text-gray-800 flex space-x-1 items-center"
+        class="text-gray-600 hover:text-gray-800 flex space-x-1 items-center"
         data-el-queue-cell-evaluation-button
         data-cell-id={@cell_id}
       >
@@ -346,7 +347,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
       </button>
       <.menu id={"cell-#{@cell_id}-evaluation-menu"} position={:bottom_left} distant>
         <:toggle>
-          <button class="flex text-gray-600 hover:text-gray-800 focus:text-gray-800">
+          <button class="flex text-gray-600 hover:text-gray-800">
             <.remix_icon icon="arrow-down-s-line" class="text-xl" />
           </button>
         </:toggle>
@@ -380,7 +381,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
   defp cell_evaluation_button(assigns) do
     ~H"""
     <button
-      class="text-gray-600 hover:text-gray-800 focus:text-gray-800 flex space-x-1 items-center"
+      class="text-gray-600 hover:text-gray-800 flex space-x-1 items-center"
       phx-click="cancel_cell_evaluation"
       phx-value-cell_id={@cell_id}
     >
@@ -396,7 +397,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
     ~H"""
     <div class="flex items-center space-x-1">
       <button
-        class="text-gray-600 hover:text-gray-800 focus:text-gray-800 flex space-x-1 items-center"
+        class="text-gray-600 hover:text-gray-800 flex space-x-1 items-center"
         data-el-queue-cell-evaluation-button
         data-cell-id={@cell_id}
       >
@@ -411,7 +412,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
       <%= unless Livebook.Runtime.fixed_dependencies?(@runtime) do %>
         <.menu id="setup-menu" position={:bottom_left} distant>
           <:toggle>
-            <button class="flex text-gray-600 hover:text-gray-800 focus:text-gray-800">
+            <button class="flex text-gray-600 hover:text-gray-800">
               <.remix_icon icon="arrow-down-s-line" class="text-xl" />
             </button>
           </:toggle>
@@ -435,7 +436,7 @@ defmodule LivebookWeb.SessionLive.CellComponent do
   defp setup_cell_evaluation_button(assigns) do
     ~H"""
     <button
-      class="text-gray-600 hover:text-gray-800 focus:text-gray-800 flex space-x-1 items-center"
+      class="text-gray-600 hover:text-gray-800 flex space-x-1 items-center"
       phx-click="cancel_cell_evaluation"
       phx-value-cell_id={@cell_id}
     >
@@ -609,12 +610,13 @@ defmodule LivebookWeb.SessionLive.CellComponent do
   attr :intellisense, :boolean, default: false
   attr :read_only, :boolean, default: false
   attr :rounded, :atom, default: :both
+  attr :hidden, :boolean, default: false
 
   defp cell_editor(assigns) do
     ~H"""
     <div
+      class={[@hidden && "hidden"]}
       id={"cell-editor-#{@cell_id}-#{@tag}"}
-      phx-update="ignore"
       phx-hook="CellEditor"
       data-p-cell-id={hook_prop(@cell_id)}
       data-p-tag={hook_prop(@tag)}
@@ -622,9 +624,14 @@ defmodule LivebookWeb.SessionLive.CellComponent do
       data-p-intellisense={hook_prop(@intellisense)}
       data-p-read-only={hook_prop(@read_only)}
     >
-      <div class={["py-3 bg-editor", rounded_class(@rounded)]} data-el-editor-container>
+      <div
+        id={"cell-editor-#{@cell_id}-#{@tag}-container"}
+        phx-update="ignore"
+        class={["bg-editor", rounded_class(@rounded)]}
+        data-el-editor-container
+      >
         <div data-el-skeleton>
-          <div class="px-8">
+          <div class="py-3 px-8">
             <.content_skeleton bg_class="bg-gray-500" empty={@empty} />
           </div>
         </div>

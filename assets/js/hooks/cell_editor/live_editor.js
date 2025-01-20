@@ -1,6 +1,5 @@
 import {
   EditorView,
-  hoverTooltip,
   keymap,
   highlightSpecialChars,
   drawSelection,
@@ -11,7 +10,7 @@ import {
   lineNumbers,
   highlightActiveLineGutter,
 } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { EditorState, EditorSelection } from "@codemirror/state";
 import {
   indentOnInput,
   bracketMatching,
@@ -46,7 +45,7 @@ import { settingsStore } from "../../lib/settings";
 import Delta from "../../lib/delta";
 import Markdown from "../../lib/markdown";
 import { readOnlyHint } from "./live_editor/codemirror/read_only_hint";
-import { wait } from "../../lib/utils";
+import { isMacOS, wait } from "../../lib/utils";
 import Emitter from "../../lib/emitter";
 import CollabClient from "./live_editor/collab_client";
 import { languages } from "./live_editor/codemirror/languages";
@@ -56,6 +55,8 @@ import {
 } from "./live_editor/codemirror/commands";
 import { ancestorNode, closestNode } from "./live_editor/codemirror/tree_utils";
 import { selectingClass } from "./live_editor/codemirror/selecting_class";
+import { globalPubsub } from "../../lib/pubsub";
+import { hoverDetails } from "./live_editor/codemirror/hover_details";
 
 /**
  * Mounts cell source editor with real-time collaboration mechanism.
@@ -97,6 +98,14 @@ export default class LiveEditor {
    * Registers a callback called whenever the editor gains focus.
    */
   onFocus = this._onFocus.event;
+
+  /** @private */
+  _onSelectionChange = new Emitter();
+
+  /**
+   * Registers a callback called whenever the editor changes selection.
+   */
+  onSelectionChange = this._onSelectionChange.event;
 
   constructor(
     container,
@@ -166,6 +175,21 @@ export default class LiveEditor {
   }
 
   /**
+   * Returns the current main cursor position.
+   */
+  getCurrentCursorPosition() {
+    if (!this.isMounted()) {
+      return null;
+    }
+
+    const pos = this.view.state.selection.main.head;
+    const line = this.view.state.doc.lineAt(pos);
+    const offset = pos - line.from;
+
+    return { line: line.number, offset };
+  }
+
+  /**
    * Focuses the editor.
    *
    * Note that this forces the editor to be mounted, if it is not already
@@ -177,6 +201,18 @@ export default class LiveEditor {
     }
 
     this.view.focus();
+  }
+
+  /**
+   * Updates editor selection such that cursor points to the given line.
+   */
+  moveCursorToLine(lineNumber, offset) {
+    const line = this.view.state.doc.line(lineNumber);
+    const position = line.from + offset;
+
+    this.view.dispatch({
+      selection: EditorSelection.single(position),
+    });
   }
 
   /**
@@ -278,6 +314,8 @@ export default class LiveEditor {
       "&": { fontSize: `${settings.editor_font_size}px` },
     });
 
+    const autoCloseBracketsEnabled = settings.editor_auto_close_brackets;
+
     const ligaturesTheme = EditorView.theme({
       "&": {
         fontVariantLigatures: `${settings.editor_ligatures ? "normal" : "none"}`,
@@ -295,6 +333,10 @@ export default class LiveEditor {
       { key: "Escape", run: exitMulticursor },
       { key: "Alt-Enter", run: insertBlankLineAndCloseHints },
     ];
+
+    const selectionChangeListener = EditorView.updateListener.of((update) =>
+      this.handleViewUpdate(update),
+    );
 
     this.view = new EditorView({
       parent: this.container,
@@ -314,7 +356,7 @@ export default class LiveEditor {
         crosshairCursor(),
         EditorState.allowMultipleSelections.of(true),
         bracketMatching(),
-        closeBrackets(),
+        autoCloseBracketsEnabled ? closeBrackets() : [],
         indentOnInput(),
         history(),
         EditorState.readOnly.of(this.readOnly),
@@ -340,7 +382,7 @@ export default class LiveEditor {
         this.intellisense
           ? [
               autocompletion({ override: [this.completionSource.bind(this)] }),
-              hoverTooltip(this.docsHoverTooltipSource.bind(this)),
+              hoverDetails(this.docsHoverTooltipSource.bind(this)),
               signature(this.signatureSource.bind(this), {
                 activateOnTyping: settings.editor_auto_signature,
               }),
@@ -351,12 +393,26 @@ export default class LiveEditor {
         settings.editor_mode === "emacs" ? [emacs()] : [],
         language ? language.support : [],
         EditorView.domEventHandlers({
+          click: this.handleEditorClick.bind(this),
           keydown: this.handleEditorKeydown.bind(this),
           blur: this.handleEditorBlur.bind(this),
           focus: this.handleEditorFocus.bind(this),
         }),
+        EditorView.clickAddsSelectionRange.of((event) => event.altKey),
+        selectionChangeListener,
       ],
     });
+  }
+
+  /** @private */
+  handleEditorClick(event) {
+    const cmd = isMacOS() ? event.metaKey : event.ctrlKey;
+
+    if (cmd) {
+      this.jumpToDefinition(this.view);
+    }
+
+    return false;
   }
 
   /** @private */
@@ -364,7 +420,6 @@ export default class LiveEditor {
     // We dispatch escape event, but only if it is not consumed by any
     // registered handler in the editor, such as closing autocompletion
     // or escaping Vim insert mode
-
     if (event.key === "Escape") {
       this.container.dispatchEvent(
         new CustomEvent("lb:editor_escape", { bubbles: true }),
@@ -388,6 +443,13 @@ export default class LiveEditor {
     this._onFocus.dispatch();
 
     return false;
+  }
+
+  /** @private */
+  handleViewUpdate(update) {
+    if (!update.state.selection.eq(update.startState.selection)) {
+      this._onSelectionChange.dispatch();
+    }
   }
 
   /** @private */
@@ -510,11 +572,31 @@ export default class LiveEditor {
             const dom = document.createElement("div");
             dom.classList.add("cm-hoverDocs");
 
+            if (response.definition) {
+              const link = document.createElement("a");
+              link.classList.add("cm-hoverDocsDefinitionLink");
+              link.innerHTML = `<i class="ri-code-line"></i> Go to definition`;
+              dom.appendChild(link);
+
+              link.addEventListener("click", (event) => {
+                globalPubsub.broadcast("jump_to_editor", {
+                  line: response.definition.line,
+                  file: response.definition.file,
+                });
+                event.preventDefault();
+              });
+            }
+
+            const contents = document.createElement("div");
+            contents.classList.add("cm-hoverDocsContents");
+            dom.appendChild(contents);
+
             for (const content of response.contents) {
               const item = document.createElement("div");
               item.classList.add("cm-hoverDocsContent");
               item.classList.add("cm-markdown");
-              dom.appendChild(item);
+              contents.appendChild(item);
+
               new Markdown(item, content, {
                 defaultCodeLanguage: this.language,
                 useDarkTheme: this.usesDarkTheme(),
@@ -524,6 +606,29 @@ export default class LiveEditor {
             return { dom };
           },
         };
+      })
+      .catch(() => null);
+  }
+
+  /** @private */
+  jumpToDefinition(view) {
+    const pos = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
+    const lineLength = line.to - line.from;
+    const text = line.text;
+
+    const column = pos - line.from;
+    if (column < 1 || column > lineLength) return null;
+
+    return this.connection
+      .intellisenseRequest("details", { line: text, column })
+      .then((response) => {
+        if (response.definition) {
+          globalPubsub.broadcast("jump_to_editor", {
+            line: response.definition.line,
+            file: response.definition.file,
+          });
+        }
       })
       .catch(() => null);
   }

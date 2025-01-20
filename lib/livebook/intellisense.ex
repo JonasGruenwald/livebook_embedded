@@ -20,12 +20,42 @@ defmodule Livebook.Intellisense do
   """
   @type context :: %{
           env: Macro.Env.t(),
+          ebin_path: String.t() | nil,
           map_binding: (Code.binding() -> any())
         }
 
   @doc """
+  Adjusts the system for more accurate intellisense.
+  """
+  @spec load() :: :ok
+  def load() do
+    # Completion looks for modules in loaded applications, so we ensure
+    # that the most relevant built-in applications are loaded
+    apps = [:erts, :crypto, :inets, :public_key, :runtime_tools, :ex_unit, :iex]
+
+    for app <- apps do
+      Application.load(app)
+    end
+
+    :ok
+  end
+
+  @doc """
+  Clears all cache stored by the intellisense modules.
+  """
+  @spec clear_cache() :: :ok
+  def clear_cache() do
+    for node <- Node.list() do
+      clear_cache(node)
+    end
+
+    :ok
+  end
+
+  @doc """
   Clear any cache stored related to the given node.
   """
+  @spec clear_cache(node()) :: :ok
   def clear_cache(node) do
     IdentifierMatcher.clear_all_loaded(node)
   end
@@ -226,7 +256,7 @@ defmodule Livebook.Intellisense do
          documentation:
            join_with_newlines([
              format_documentation(documentation, :short),
-             code(format_signatures(signatures, module))
+             code(format_signatures(signatures, module, name, arity))
            ]),
          insert_text:
            cond do
@@ -413,8 +443,12 @@ defmodule Livebook.Intellisense do
         nil
 
       matches ->
+        matches = Enum.sort_by(matches, & &1[:arity], :asc)
         contents = Enum.map(matches, &format_details_item/1)
-        %{range: range, contents: contents}
+
+        definition = get_definition_location(hd(matches), context)
+
+        %{range: range, contents: contents, definition: definition}
     end
   end
 
@@ -460,7 +494,7 @@ defmodule Livebook.Intellisense do
          meta: meta
        }) do
     join_with_divider([
-      format_signatures(signatures, module) |> code(),
+      format_signatures(signatures, module, name, arity) |> code(),
       join_with_middle_dot([
         format_docs_link(module, {:function, name, arity}),
         format_meta(:since, meta)
@@ -480,7 +514,7 @@ defmodule Livebook.Intellisense do
          type_spec: type_spec
        }) do
     join_with_divider([
-      format_type_signature(type_spec, module) |> code(),
+      format_type_signature(type_spec, module, name, arity) |> code(),
       format_docs_link(module, {:type, name, arity}),
       format_type_spec(type_spec, @extended_line_length) |> code(),
       format_documentation(documentation, :all)
@@ -492,6 +526,37 @@ defmodule Livebook.Intellisense do
       code("@#{name}"),
       format_documentation(documentation, :all)
     ])
+  end
+
+  defp get_definition_location(%{kind: :module, module: module}, context) do
+    get_definition_location(module, context, {:module, module})
+  end
+
+  defp get_definition_location(
+         %{kind: :function, module: module, name: name, arity: arity},
+         context
+       ) do
+    get_definition_location(module, context, {:function, name, arity})
+  end
+
+  defp get_definition_location(%{kind: :type, module: module, name: name, arity: arity}, context) do
+    get_definition_location(module, context, {:type, name, arity})
+  end
+
+  defp get_definition_location(_idenfitier, _context), do: nil
+
+  defp get_definition_location(module, context, identifier) do
+    if context.ebin_path do
+      path = Path.join(context.ebin_path, "#{module}.beam")
+
+      with true <- File.exists?(path),
+           {:ok, line} <- Docs.locate_definition(String.to_charlist(path), identifier) do
+        file = module.module_info(:compile)[:source]
+        %{file: to_string(file), line: line}
+      else
+        _otherwise -> nil
+      end
+    end
   end
 
   # Formatting helpers
@@ -521,12 +586,7 @@ defmodule Livebook.Intellisense do
 
   defp format_docs_link(module, function_or_type \\ nil) do
     app = Application.get_application(module)
-
-    module_name =
-      case Atom.to_string(module) do
-        "Elixir." <> name -> name
-        name -> name
-      end
+    module_name = module_name(module)
 
     is_otp? =
       case :code.which(module) do
@@ -563,9 +623,11 @@ defmodule Livebook.Intellisense do
     end
   end
 
-  defp format_signatures([], _module), do: nil
+  defp format_signatures([], module, name, arity) do
+    signature_fallback(module, name, arity)
+  end
 
-  defp format_signatures(signatures, module) do
+  defp format_signatures(signatures, module, _name, _arity) do
     signatures_string = Enum.join(signatures, "\n")
 
     # Don't add module prefix to operator signatures
@@ -576,11 +638,18 @@ defmodule Livebook.Intellisense do
     end
   end
 
-  defp format_type_signature(nil, _module), do: nil
+  defp format_type_signature(nil, module, name, arity) do
+    signature_fallback(module, name, arity)
+  end
 
-  defp format_type_signature({_type_kind, type}, module) do
+  defp format_type_signature({_type_kind, type}, module, _name, _arity) do
     {:"::", _env, [lhs, _rhs]} = Code.Typespec.type_to_quoted(type)
     inspect(module) <> "." <> Macro.to_string(lhs)
+  end
+
+  defp signature_fallback(module, name, arity) do
+    args = Enum.map_join(1..arity//1, ", ", fn n -> "arg#{n}" end)
+    "#{inspect(module)}.#{name}(#{args})"
   end
 
   defp format_meta(:deprecated, %{deprecated: deprecated}) do
@@ -867,5 +936,12 @@ defmodule Livebook.Intellisense do
          [{:li, [], prev_content} | acc]
        ) do
     group_type_list_items(items, [{:li, [], prev_content ++ [{:p, [], content}]} | acc])
+  end
+
+  defp module_name(module) do
+    case Atom.to_string(module) do
+      "Elixir." <> name -> name
+      name -> name
+    end
   end
 end

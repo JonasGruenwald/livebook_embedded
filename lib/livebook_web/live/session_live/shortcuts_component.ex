@@ -82,8 +82,8 @@ defmodule LivebookWeb.SessionLive.ShortcutsComponent do
     ],
     navigation_mode: [
       %{seq: ["?"], desc: "Open this help modal", basic: true},
-      %{seq: ["j"], desc: "Focus next cell", basic: true},
-      %{seq: ["k"], desc: "Focus previous cell", basic: true},
+      %{seq: ["j"], desc: "Focus cell below", basic: true},
+      %{seq: ["k"], desc: "Focus cell above", basic: true},
       %{seq: ["J"], desc: "Move cell down"},
       %{seq: ["K"], desc: "Move cell up"},
       %{seq: ["i"], desc: "Switch to insert mode", basic: true},
@@ -101,9 +101,9 @@ defmodule LivebookWeb.SessionLive.ShortcutsComponent do
       %{seq: ["e", "s"], desc: "Evaluate section"},
       %{seq: ["e", "a"], desc: "Evaluate all outdated cells", basic: true},
       %{seq: ["e", "x"], desc: "Cancel cell evaluation"},
-      %{seq: ["s", "s"], desc: "Toggle sections panel"},
+      %{seq: ["s", "o"], desc: "Toggle outline panel"},
       %{seq: ["s", "u"], desc: "Toggle users panel"},
-      %{seq: ["s", "e"], desc: "Toggle secrets panel"},
+      %{seq: ["s", "s"], desc: "Toggle secrets panel"},
       %{seq: ["s", "r"], desc: "Show runtime panel"},
       %{seq: ["s", "b"], desc: "Show bin"},
       %{seq: ["s", "p"], desc: "Show package search"},
@@ -143,6 +143,18 @@ defmodule LivebookWeb.SessionLive.ShortcutsComponent do
         press_all: true,
         desc: "Save notebook",
         basic: true
+      },
+      %{
+        seq: ["ctrl", "alt", "-"],
+        seq_mac: ["⌃", "⌥", "-"],
+        press_all: true,
+        desc: "Go back to previous editor"
+      },
+      %{
+        seq: ["ctrl", "alt", "="],
+        seq_mac: ["⌃", "⌥", "="],
+        press_all: true,
+        desc: "Go forward to next editor"
       }
     ]
   }

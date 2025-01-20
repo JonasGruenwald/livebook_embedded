@@ -381,7 +381,7 @@ defmodule LivebookWeb.FileSelectComponent do
       <:toggle>
         <button
           type="button"
-          class="w-full flex space-x-2 items-center p-2 rounded-lg hover:bg-gray-100 focus:ring-1 focus:ring-gray-400"
+          class="w-full flex space-x-2 items-center p-2 rounded-lg hover:bg-gray-100 focus:ring-1 focus:ring-gray-400 focus-visible:outline-none"
           data-toggle
           aria-label={"#{if @file_info.name == "..", do: "parent directory", else: @file_info.name}"}
           phx-click="set_path"
@@ -490,7 +490,7 @@ defmodule LivebookWeb.FileSelectComponent do
 
     file = FileSystem.File.new(file_system)
 
-    send_event(socket, {:set_file, file, %{exists: true}})
+    send_event(socket.assigns.target, {:set_file, file, %{exists: true}})
 
     {:noreply, socket}
   end
@@ -512,7 +512,7 @@ defmodule LivebookWeb.FileSelectComponent do
         _info -> %{exists: true}
       end
 
-    send_event(socket, {:set_file, file, info})
+    send_event(socket.assigns.target, {:set_file, file, info})
 
     {:noreply, socket}
   end
@@ -689,9 +689,13 @@ defmodule LivebookWeb.FileSelectComponent do
       unhighlighted: name,
       file: file,
       is_dir: FileSystem.File.dir?(file),
-      is_running: file in running_files,
+      is_running: running?(file, running_files),
       editable: Keyword.get(opts, :editable, true)
     }
+  end
+
+  defp running?(file, running_files) do
+    Enum.any?(running_files, &FileSystem.File.equal?(&1, file))
   end
 
   defp hidden?(filename) do
@@ -754,15 +758,5 @@ defmodule LivebookWeb.FileSelectComponent do
     new_name = if FileSystem.File.dir?(file), do: name <> "/", else: name
     new_file = FileSystem.File.resolve(parent_dir, new_name)
     FileSystem.File.rename(file, new_file)
-  end
-
-  defp send_event(socket, event) do
-    case socket.assigns.target do
-      {module, id} ->
-        send_update(module, id: id, event: event)
-
-      pid when is_pid(pid) ->
-        send(pid, event)
-    end
   end
 end
